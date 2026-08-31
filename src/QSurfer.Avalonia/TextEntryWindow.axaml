@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="QSurfer.Avalonia.TextEntryWindow"
+        Width="420"
+        Height="190"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+  <Grid Margin="22" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="10">
+    <TextBlock x:Name="PromptText" Classes="panel-title" />
+    <TextBox Grid.Row="1" x:Name="ValueBox" />
+    <TextBlock Grid.Row="2" x:Name="ErrorText" Foreground="#FFD93D5D" TextWrapping="Wrap" />
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="Cancel" Click="Cancel_Click" />
+      <Button x:Name="AcceptButton" Classes="primary" Click="Accept_Click" />
+    </StackPanel>
+  </Grid>
+</Window>

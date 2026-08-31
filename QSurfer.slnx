@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/QSurfer.Avalonia/QSurfer.Avalonia.csproj" />
+    <Project Path="src/QSurfer.Core/QSurfer.Core.csproj" />
+  </Folder>
+</Solution>

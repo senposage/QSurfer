@@ -1,0 +1,9 @@
+{
+  "host": "",
+  "port": 443,
+  "ssl": true,
+  "ssl_verify": false,
+  "user": "",
+  "password": "",
+  "path_mappings": []
+}

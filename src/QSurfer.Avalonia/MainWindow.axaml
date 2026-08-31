@@ -1,0 +1,579 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:QSurfer.Avalonia.Controls"
+        x:Class="QSurfer.Avalonia.MainWindow"
+        Title="QSurfer"
+        Width="1280"
+        Height="820"
+        MinWidth="900"
+        MinHeight="620">
+  <Grid RowDefinitions="Auto,Auto,*,Auto">
+    <Border Classes="app-header">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Text="QSurfer" Classes="app-title" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="NAS search and browser" Classes="app-subtitle" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="1" Classes="command-bar">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="2">
+          <Button Content="&#xE8E5;" Classes="toolbar-icon command-open" Command="{Binding SelectedSearchTab.OpenCommand}" ToolTip.Tip="Open selected item" />
+          <Button Content="&#xE8B7;" Classes="toolbar-icon command-show" Command="{Binding SelectedSearchTab.BrowseCommand}" ToolTip.Tip="Show selected item in File Explorer" />
+          <Border Width="1" Height="20" Background="{DynamicResource QSurfer.SurfaceBorder}" Margin="5,0" />
+          <Button Classes="toolbar-pane-toggle" Command="{Binding TogglePreviewCommand}" ToolTip.Tip="Show or hide preview">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock Text="&#xE890;" Classes="toolbar-pane-glyph" />
+              <TextBlock Text="Preview" Classes="toolbar-pane-label" />
+            </StackPanel>
+          </Button>
+          <Button Classes="toolbar-pane-toggle" Command="{Binding ToggleFavoritesCommand}" ToolTip.Tip="Show or hide Favorites">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock Text="&#xE8A2;" Classes="toolbar-pane-glyph" />
+              <TextBlock Text="Favorites" Classes="toolbar-pane-label" />
+            </StackPanel>
+          </Button>
+          <Border Width="1" Height="20" Background="{DynamicResource QSurfer.SurfaceBorder}" Margin="5,0" />
+          <Button Content="&#xE897;" Classes="toolbar-icon command-help" Click="Help_Click" ToolTip.Tip="Help" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBlock Text="NAS connection needed" Foreground="#FFD06A55" VerticalAlignment="Center" IsVisible="{Binding NeedsConnection}" />
+          <Button Content="&#xE713;" Classes="toolbar-icon" Click="Settings_Click" ToolTip.Tip="Settings" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2">
+      <Grid RowDefinitions="Auto,*" RowSpacing="0">
+          <Border Classes="search-tabs">
+            <DockPanel LastChildFill="False">
+              <ListBox DockPanel.Dock="Left" Classes="search-tab-list" ItemsSource="{Binding SearchTabs}"
+                       SelectedItem="{Binding SelectedSearchTab, Mode=TwoWay}"
+                       Background="Transparent"
+                       BorderThickness="0"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                       PointerPressed="SearchTabPointerPressed"
+                       PointerReleased="SearchTabPointerReleased"
+                       SelectionChanged="SearchTabSelectionChanged">
+                <ListBox.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal" />
+                  </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Border Classes="search-tab-item">
+                      <Border.ContextMenu>
+                        <ContextMenu>
+                          <MenuItem Header="Save search" Command="{Binding SaveSearchCommand}" />
+                        </ContextMenu>
+                      </Border.ContextMenu>
+                      <StackPanel Orientation="Horizontal" Spacing="2">
+                        <Button Content="{Binding WorkspaceGlyph}" Classes="tab-action" FontFamily="Segoe MDL2 Assets" Tag="{Binding}" Click="ToggleTabWorkspace_Click" ToolTip.Tip="Switch between search results and folder browsing" />
+                        <TextBlock Text="{Binding Title}" Width="106" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <Button Content="&#xE718;" Classes="tab-action" Tag="{Binding}" Click="ToggleTabPin_Click" ToolTip.Tip="Pin this search" />
+                        <Button Content="&#xE711;" Classes="tab-action" Tag="{Binding}" Click="CloseSearchTab_Click" ToolTip.Tip="Close this search" />
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <Button DockPanel.Dock="Left" Content="&#xE710;" Classes="tab-add" Command="{Binding NewSearchTabCommand}" ToolTip.Tip="New search tab" />
+            </DockPanel>
+          </Border>
+
+          <ContentControl Grid.Row="1" Content="{Binding SelectedSearchTab}">
+            <ContentControl.ContentTemplate>
+              <DataTemplate>
+                <Grid RowDefinitions="Auto,*" RowSpacing="0">
+                  <Border Classes="search-surface">
+                    <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
+                      <Grid ColumnDefinitions="*,14,*">
+                        <Grid Grid.Column="0" ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="4">
+                          <Button Grid.Column="0" Content="&#xE72B;" Classes="side-pane-action command-show" Command="{Binding DataContext.NavigateBackCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Back" />
+                          <Button Grid.Column="1" Content="&#xE72A;" Classes="side-pane-action command-show" Command="{Binding DataContext.NavigateForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Forward" />
+                          <Button Grid.Column="2" Content="&#xE74A;" Classes="side-pane-action command-open" Command="{Binding DataContext.NavigateUpCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Up one folder" />
+                          <TextBox Grid.Column="3"
+                                   Classes="location-box"
+                                   Watermark="Address"
+                                   Text="{Binding DataContext.BrowserLocation, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
+                                   GotFocus="BrowserLocationGotFocus"
+                                   KeyDown="BrowserLocationKeyDown" />
+                        </Grid>
+                        <Border Grid.Column="1" Classes="address-search-divider" />
+                        <Grid Grid.Column="2" ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="8">
+                          <TextBox Grid.Column="0"
+                                   Classes="search-box"
+                                   MinWidth="180"
+                                   Watermark="Search file and folder names"
+                                   Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                                   GotFocus="SearchTabGotFocus"
+                                   KeyDown="SearchTabKeyDown" />
+                          <Button Grid.Column="1" x:Name="RecentSearchToggle" Content="&#xE81C;" Classes="toolbar-icon"
+                                  Click="RecentSearchToggle_Click"
+                                  ToolTip.Tip="Recent searches" />
+                        <Popup IsOpen="{Binding DataContext.IsRecentSearchesOpen, Mode=TwoWay, RelativeSource={RelativeSource AncestorType=Window}}"
+                               Placement="Bottom"
+                               PlacementTarget="{Binding #RecentSearchToggle}"
+                               IsLightDismissEnabled="True"
+                               OverlayDismissEventPassThrough="True"
+                               Closed="RecentSearchPopup_Closed">
+                          <Border Classes="side-pane" Width="260" Padding="8">
+                            <ListBox ItemsSource="{Binding DataContext.RecentSearches, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     SelectionChanged="RecentSearchSelected">
+                              <ListBox.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" /></DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                          </Border>
+                        </Popup>
+                          <Button Grid.Column="2" Content="Clear" Command="{Binding ClearCommand}" />
+                          <Button Grid.Column="3" Content="Stop" Command="{Binding StopCommand}" IsEnabled="{Binding IsSearching}" />
+                          <Button Grid.Column="4" Classes="primary" Content="Search" Command="{Binding SearchCommand}" IsDefault="True" />
+                        </Grid>
+                      </Grid>
+                      <WrapPanel Grid.Row="1" ItemHeight="28" VerticalAlignment="Center">
+                        <CheckBox Content="Exact match" IsChecked="{Binding ExactMatch}" Margin="0,0,16,0" />
+                        <CheckBox Content="Search contents" IsChecked="{Binding SearchContents}" Margin="0,0,16,0" />
+                        <ToggleButton x:Name="TypeFilterToggle" Content="{Binding TypeFilterSummary}" Width="152" IsChecked="{Binding IsTypeFilterOpen}" ToolTip.Tip="Filter by one or more file types" />
+                        <Popup IsOpen="{Binding IsTypeFilterOpen, Mode=TwoWay}"
+                               Placement="Bottom"
+                               PlacementTarget="{Binding #TypeFilterToggle}"
+                               HorizontalOffset="12"
+                               IsLightDismissEnabled="True"
+                               OverlayDismissEventPassThrough="True"
+                               Closed="TypeFilterPopup_Closed">
+                          <Border Classes="side-pane" Width="220" Padding="10">
+                            <StackPanel Spacing="6">
+                              <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Text="File types" Classes="panel-title" />
+                                <Button Grid.Column="1" Content="Clear" Classes="panel-action" Command="{Binding ClearFiltersCommand}" />
+                              </Grid>
+                              <ItemsControl ItemsSource="{Binding TypeFilterOptions}">
+                                <ItemsControl.ItemTemplate>
+                                  <DataTemplate>
+                                    <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                  </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                              </ItemsControl>
+                              <Button Content="Apply" HorizontalAlignment="Right" Classes="panel-action" Click="ApplyTypeFilters_Click" />
+                            </StackPanel>
+                          </Border>
+                        </Popup>
+                        <ComboBox Width="130" ItemsSource="{Binding DatePresets}" SelectedItem="{Binding SelectedDatePreset}" Margin="16,0,0,0" />
+                        <TextBlock Text="From" Classes="field-label" VerticalAlignment="Center" Margin="16,0,6,0" />
+                        <CalendarDatePicker Width="132"
+                                            SelectedDate="{Binding DateFrom, Mode=TwoWay}"
+                                            DisplayDateEnd="{Binding Today}"
+                                            Watermark="Any date" />
+                        <TextBlock Text="To" Classes="field-label" VerticalAlignment="Center" Margin="10,0,6,0" />
+                        <CalendarDatePicker Width="132"
+                                            SelectedDate="{Binding DateTo, Mode=TwoWay}"
+                                            DisplayDateEnd="{Binding Today}"
+                                            Watermark="Today" />
+                        <Button Content="Clear filters" Classes="panel-action" Command="{Binding ClearFiltersCommand}" Margin="10,0,0,0" />
+                        <TextBlock Text="Scope" Classes="field-label" VerticalAlignment="Center" Margin="16,0,6,0" />
+                        <ComboBox Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" />
+                        <TextBlock Text="Arrange" Classes="field-label" VerticalAlignment="Center" Margin="16,0,6,0" />
+                        <ComboBox Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode}" />
+                        <TextBlock Text="View" Classes="field-label" VerticalAlignment="Center" Margin="16,0,8,0" />
+                        <ComboBox Width="130" ItemsSource="{Binding ViewModes}" SelectedItem="{Binding SelectedViewMode}" />
+                        <Button Content="Load more" Classes="panel-action" Command="{Binding LoadMoreCommand}" Margin="10,0,0,0" />
+                      </WrapPanel>
+                      <ProgressBar Grid.Row="2" Height="3" Minimum="0" Maximum="1" Value="0.6" IsIndeterminate="{Binding IsSearching}" IsVisible="{Binding IsSearching}" />
+                    </Grid>
+                  </Border>
+
+                  <Grid x:Name="ResultLayoutGrid" Grid.Row="1" ColumnDefinitions="238,6,*,6,280">
+                    <Border Grid.Column="0" Classes="side-pane favorites-pane" MinWidth="180" IsVisible="{Binding DataContext.IsFavoritesVisible, RelativeSource={RelativeSource AncestorType=Window}}">
+                      <Grid RowDefinitions="Auto,3*,Auto,6,Auto,2*" RowSpacing="8">
+                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
+                          <TextBlock Text="★ Favorites" Classes="panel-title" VerticalAlignment="Center" />
+                          <Button Grid.Column="1" Content="&#xE72C;" Classes="side-pane-action" Command="{Binding DataContext.RefreshFavoritesCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Refresh Favorites" />
+                          <Button Grid.Column="2" Content="&#xE711;" Classes="side-pane-action" Command="{Binding DataContext.ToggleFavoritesCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Hide Favorites" />
+                        </Grid>
+                        <TreeView Grid.Row="1"
+                                  ItemsSource="{Binding DataContext.FavoriteTree, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  SelectedItem="{Binding DataContext.SelectedFavoriteNode, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  SelectionChanged="FavoriteSelectionChanged"
+                                  DoubleTapped="FavoriteDoubleTapped"
+                                  PointerPressed="FavoritePointerPressed">
+                          <TreeView.Styles>
+                            <Style Selector="TreeViewItem">
+                              <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                            </Style>
+                          </TreeView.Styles>
+                          <TreeView.ContextMenu>
+                            <ContextMenu Opened="FavoriteContextMenu_Opened">
+                              <MenuItem Header="Open" Tag="open" Click="FavoriteOpen_Click" />
+                              <MenuItem Header="Show in File Explorer" Tag="show" Click="FavoriteShow_Click" />
+                              <MenuItem Header="Copy full path" Tag="copy" Click="FavoriteCopyPath_Click" />
+                              <MenuItem Header="Add to group" Tag="group" Click="FavoriteAddToGroup_Click" />
+                              <Separator Tag="result-separator" />
+                              <MenuItem Header="Remove favorite" Tag="remove" Click="FavoriteRemove_Click" />
+                              <MenuItem Header="Delete group" Tag="delete-group" Click="FavoriteDeleteGroup_Click" />
+                            </ContextMenu>
+                          </TreeView.ContextMenu>
+                          <TreeView.ItemTemplate>
+                            <TreeDataTemplate ItemsSource="{Binding Children}">
+                              <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ToolTip}" />
+                            </TreeDataTemplate>
+                          </TreeView.ItemTemplate>
+                        </TreeView>
+                        <TextBlock Grid.Row="2" Text="Favorites are personal to this Windows user." Classes="field-label" TextWrapping="Wrap" />
+                        <GridSplitter Grid.Row="3" Height="6" Classes="side-pane-divider" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" HorizontalAlignment="Stretch" />
+                        <Grid Grid.Row="4">
+                          <TextBlock Text="Folders" Classes="panel-title" VerticalAlignment="Center" />
+                        </Grid>
+                        <TreeView Grid.Row="5"
+                                  ItemsSource="{Binding DataContext.NavigationRoots, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  PointerReleased="NavigationTreePointerReleased">
+                          <TreeView.Styles>
+                            <Style Selector="TreeViewItem">
+                              <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                            </Style>
+                          </TreeView.Styles>
+                          <TreeView.ItemTemplate>
+                            <TreeDataTemplate ItemsSource="{Binding Children}">
+                              <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding !IsPlaceholder}">
+                                <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="14" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip.Tip="{Binding FullPath}" />
+                              </StackPanel>
+                            </TreeDataTemplate>
+                          </TreeView.ItemTemplate>
+                        </TreeView>
+                      </Grid>
+                    </Border>
+
+                    <GridSplitter Grid.Column="1" Width="6" Classes="side-pane-divider" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" IsVisible="{Binding DataContext.IsFavoritesVisible, RelativeSource={RelativeSource AncestorType=Window}}" />
+
+                    <GridSplitter Grid.Column="3" Width="6" Classes="side-pane-divider" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" IsVisible="{Binding DataContext.IsPreviewVisible, RelativeSource={RelativeSource AncestorType=Window}}" />
+
+                    <Border Grid.Column="4" Classes="side-pane preview-pane" MinWidth="220" IsVisible="{Binding DataContext.IsPreviewVisible, RelativeSource={RelativeSource AncestorType=Window}}">
+                      <Grid RowDefinitions="Auto,*,Auto" RowSpacing="10">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4">
+                          <TextBlock Text="Preview" Classes="panel-title" VerticalAlignment="Center" />
+                          <Button Grid.Column="1" Content="&#xE711;" Classes="side-pane-action" Command="{Binding DataContext.TogglePreviewCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Hide Preview" />
+                        </Grid>
+                        <Grid Grid.Row="1">
+                          <StackPanel Spacing="10">
+                            <TextBlock Text="{Binding DataContext.PreviewTitle, RelativeSource={RelativeSource AncestorType=Window}}" Classes="preview-title" />
+                            <TextBlock Text="{Binding DataContext.PreviewDescription, RelativeSource={RelativeSource AncestorType=Window}}" Classes="field-label" />
+                            <TextBlock Text="{Binding DataContext.PreviewLocation, RelativeSource={RelativeSource AncestorType=Window}}" Classes="preview-path" />
+                          </StackPanel>
+                          <ContentControl Content="{Binding DataContext.NativePreviewHost, RelativeSource={RelativeSource AncestorType=Window}}" />
+                        </Grid>
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
+                          <Button Content="&#xE8E5;" Classes="side-pane-action command-open" Command="{Binding OpenCommand}" ToolTip.Tip="Open selected item" />
+                          <Button Content="&#xE8B7;" Classes="side-pane-action command-show" Command="{Binding BrowseCommand}" ToolTip.Tip="Show selected item in File Explorer" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+
+                    <Grid Grid.Column="2" MinWidth="340">
+                      <Grid IsVisible="{Binding DataContext.IsSearchContentVisible, RelativeSource={RelativeSource AncestorType=Window}}">
+                        <Border Classes="result-surface" IsVisible="{Binding HasResults, FallbackValue=False}">
+                          <DataGrid Classes="results-grid"
+                                    x:Name="DetailsResultsGrid"
+                                    ItemsSource="{Binding Results}"
+                                    SelectedItem="{Binding SelectedResult, Mode=TwoWay}"
+                                    AutoGenerateColumns="False"
+                                    IsReadOnly="True"
+                                    SelectionMode="Extended"
+                                    CanUserResizeColumns="True"
+                                    CanUserSortColumns="True"
+                                    GridLinesVisibility="None"
+                                    IsVisible="{Binding IsDetailsView}"
+                                    SelectionChanged="SearchResultSelected"
+                                    Sorting="DetailsGrid_Sorting"
+                                    DoubleTapped="SearchResultDoubleTapped"
+                                    PointerPressed="ResultPointerPressed">
+                            <DataGrid.ContextMenu>
+                              <ContextMenu Opened="ResultContextMenu_Opened">
+                                <MenuItem Header="Open" Tag="open" Click="ResultOpen_Click" />
+                                <MenuItem Header="Show in File Explorer" Tag="show" Click="ResultShow_Click" />
+                                <MenuItem Header="Copy full path" Tag="copy" Click="ResultCopyPath_Click" />
+                                <MenuItem Header="Properties" Tag="properties" Click="ResultProperties_Click" />
+                                <Separator />
+                                <MenuItem Header="Add or remove Favorite" Tag="favorite" Click="ResultFavorite_Click" />
+                                <MenuItem Header="Add to group" Tag="group" Click="ResultAddToGroup_Click" />
+                                <Separator />
+                                <MenuItem Header="Columns" Tag="columns">
+                                  <MenuItem Header="Name" Tag="column:name" ToggleType="CheckBox" Click="ToggleDetailColumn_Click" />
+                                  <MenuItem Header="Location" Tag="column:location" ToggleType="CheckBox" Click="ToggleDetailColumn_Click" />
+                                  <MenuItem Header="Date modified" Tag="column:modified" ToggleType="CheckBox" Click="ToggleDetailColumn_Click" />
+                                  <MenuItem Header="Type" Tag="column:type" ToggleType="CheckBox" Click="ToggleDetailColumn_Click" />
+                                  <MenuItem Header="Size" Tag="column:size" ToggleType="CheckBox" Click="ToggleDetailColumn_Click" />
+                                </MenuItem>
+                              </ContextMenu>
+                            </DataGrid.ContextMenu>
+                            <DataGrid.Columns>
+                              <DataGridTemplateColumn Header="Name" SortMemberPath="name" Width="2*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                  <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                      <Grid Width="24" Height="24">
+                                        <TextBlock Text="{Binding IconGlyph}" Classes="file-glyph" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        <Image Source="{Binding IconSource}" Width="22" Height="22" Stretch="Uniform" />
+                                      </Grid>
+                                      <controls:HighlightTextBlock SourceText="{Binding FileName}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-name" VerticalAlignment="Center" />
+                                      <Button Content="★" Classes="result-favorite" FontFamily="Segoe UI Symbol" Tag="{Binding}" Click="ToggleFavoriteResult_Click" ToolTip.Tip="Add or remove Favorite" />
+                                    </StackPanel>
+                                  </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                              </DataGridTemplateColumn>
+                              <DataGridTemplateColumn Header="Location" SortMemberPath="location" Width="3*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                  <DataTemplate>
+                                    <controls:HighlightTextBlock SourceText="{Binding DisplayPath}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" TextTrimming="CharacterEllipsis" />
+                                  </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                              </DataGridTemplateColumn>
+                              <DataGridTextColumn Header="Date modified" SortMemberPath="modified" Binding="{Binding Modified}" Width="150" />
+                              <DataGridTextColumn Header="Type" SortMemberPath="type" Binding="{Binding Kind}" Width="130" />
+                              <DataGridTextColumn Header="Size" SortMemberPath="size" Binding="{Binding SizeText}" Width="95" />
+                            </DataGrid.Columns>
+                          </DataGrid>
+                        </Border>
+
+                        <Border Classes="result-surface" IsVisible="{Binding IsListView}">
+                          <ListBox Classes="result-list"
+                                   ItemsSource="{Binding Results}"
+                                   SelectedItem="{Binding SelectedResult, Mode=TwoWay}"
+                                   SelectionChanged="SearchResultSelected"
+                                   DoubleTapped="SearchResultDoubleTapped">
+                            <ListBox.ItemTemplate>
+                              <DataTemplate>
+                                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="10,7">
+                                  <Grid Width="24" Height="24" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding IconGlyph}" Classes="file-glyph" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    <Image Source="{Binding IconSource}" Width="22" Height="22" Stretch="Uniform" />
+                                  </Grid>
+                                  <StackPanel Grid.Column="1" Spacing="2">
+                                    <controls:HighlightTextBlock SourceText="{Binding FileName}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-name" />
+                                    <controls:HighlightTextBlock SourceText="{Binding DisplayPath}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-path" />
+                                  </StackPanel>
+                                  <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock Text="{Binding Kind}" Classes="field-label" HorizontalAlignment="Right" />
+                                    <TextBlock Text="{Binding Modified}" Classes="result-path" HorizontalAlignment="Right" />
+                                  </StackPanel>
+                                </Grid>
+                              </DataTemplate>
+                            </ListBox.ItemTemplate>
+                          </ListBox>
+                        </Border>
+
+                        <Border Classes="result-surface" IsVisible="{Binding IsSmallIconView}">
+                          <ListBox Classes="result-list" ItemsSource="{Binding Results}" SelectedItem="{Binding SelectedResult, Mode=TwoWay}" SelectionChanged="SearchResultSelected" DoubleTapped="SearchResultDoubleTapped">
+                            <ListBox.ItemsPanel>
+                              <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                              <DataTemplate>
+                                <Border Classes="result-icon-tile" Width="138" Height="116" Margin="4">
+                                  <StackPanel HorizontalAlignment="Center" Spacing="4">
+                                    <Grid Width="32" Height="32" HorizontalAlignment="Center">
+                                      <TextBlock Text="{Binding IconGlyph}" Classes="file-glyph" FontSize="26" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                      <Image Source="{Binding IconSource}" Width="30" Height="30" Stretch="Uniform" />
+                                    </Grid>
+                                    <controls:HighlightTextBlock SourceText="{Binding FileName}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-name" TextAlignment="Center" MaxWidth="120" TextWrapping="Wrap" />
+                                    <controls:HighlightTextBlock SourceText="{Binding DisplayPath}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-path" TextAlignment="Center" MaxWidth="120" />
+                                  </StackPanel>
+                                </Border>
+                              </DataTemplate>
+                            </ListBox.ItemTemplate>
+                          </ListBox>
+                        </Border>
+
+                        <Border Classes="result-surface" IsVisible="{Binding IsLargeIconView}">
+                          <ListBox Classes="result-list" ItemsSource="{Binding Results}" SelectedItem="{Binding SelectedResult, Mode=TwoWay}" SelectionChanged="SearchResultSelected" DoubleTapped="SearchResultDoubleTapped">
+                            <ListBox.ItemsPanel>
+                              <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                              <DataTemplate>
+                                <Border Classes="result-icon-tile" Width="210" Height="180" Margin="7">
+                                  <StackPanel HorizontalAlignment="Center" Spacing="8">
+                                    <Grid Width="58" Height="58" HorizontalAlignment="Center">
+                                      <TextBlock Text="{Binding IconGlyph}" Classes="file-glyph" FontSize="52" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                      <Image Source="{Binding IconSource}" Width="56" Height="56" Stretch="Uniform" />
+                                    </Grid>
+                                    <controls:HighlightTextBlock SourceText="{Binding FileName}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-name" TextAlignment="Center" MaxWidth="188" TextWrapping="Wrap" />
+                                    <controls:HighlightTextBlock SourceText="{Binding DisplayPath}" HighlightQuery="{Binding DataContext.SelectedSearchTab.Query, RelativeSource={RelativeSource AncestorType=Window}}" HighlightEnabled="{Binding DataContext.Config.Behavior.HighlightMatches, RelativeSource={RelativeSource AncestorType=Window}}" HighlightBrush="{DynamicResource QSurfer.MatchHighlight}" Classes="result-path" TextAlignment="Center" MaxWidth="188" />
+                                  </StackPanel>
+                                </Border>
+                              </DataTemplate>
+                            </ListBox.ItemTemplate>
+                          </ListBox>
+                        </Border>
+
+                        <Border Classes="empty-state" IsVisible="{Binding HasNoResults}">
+                          <StackPanel MaxWidth="420" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
+                            <TextBlock Text="Search shared files" Classes="empty-title" HorizontalAlignment="Center" />
+                            <TextBlock Text="Enter a file or folder name above to search the NAS." TextAlignment="Center" TextWrapping="Wrap" Classes="empty-copy" />
+                            <Button Content="Configure NAS connection" Click="Settings_Click" IsVisible="{Binding DataContext.NeedsConnection, RelativeSource={RelativeSource AncestorType=Window}}" />
+                          </StackPanel>
+                        </Border>
+
+                      </Grid>
+
+                      <Border Classes="result-surface browser-content" IsVisible="{Binding DataContext.IsNavigationVisible, RelativeSource={RelativeSource AncestorType=Window}}">
+                          <Grid>
+                            <DataGrid
+                                      Classes="results-grid"
+                                      IsVisible="{Binding DataContext.SelectedSearchTab.IsDetailsView, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      ItemsSource="{Binding DataContext.BrowserItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      SelectedItem="{Binding DataContext.SelectedBrowserItem, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}"
+                                      AutoGenerateColumns="False"
+                                       IsReadOnly="True"
+                                       SelectionMode="Extended"
+                                       CanUserResizeColumns="True"
+                                       GridLinesVisibility="None"
+                                       SelectionChanged="BrowserItemSelected"
+                                      PointerPressed="BrowserItemPointerPressed"
+                                      PointerReleased="BrowserItemPointerReleased"
+                                      DoubleTapped="BrowserItemDoubleTapped">
+                              <DataGrid.ContextMenu>
+                                <ContextMenu Opened="BrowserContextMenu_Opened">
+                                  <MenuItem Header="Open" Click="BrowserOpen_Click" />
+                                  <Separator />
+                                  <MenuItem Header="Cut" Tag="cut" Click="BrowserCut_Click" />
+                                  <MenuItem Header="Copy" Tag="copy" Click="BrowserCopy_Click" />
+                                  <MenuItem Header="Paste" Tag="paste" Click="BrowserPaste_Click" />
+                                  <Separator />
+                                  <MenuItem Header="Rename" Tag="rename" Click="BrowserRename_Click" />
+                                  <MenuItem Header="Delete" Tag="delete" Click="BrowserDelete_Click" />
+                                  <Separator />
+                                  <MenuItem Header="New folder" Tag="new-folder" Click="BrowserNewFolder_Click" />
+                                  <MenuItem Header="Create shortcut" Tag="shortcut" Click="BrowserShortcut_Click" />
+                                  <MenuItem Header="Copy full path" Tag="copy-path" Click="BrowserCopyPath_Click" />
+                                  <MenuItem Header="Properties" Tag="properties" Click="BrowserProperties_Click" />
+                                  <Separator />
+                                  <MenuItem Header="Add or remove Favorite" Click="BrowserFavorite_Click" />
+                                </ContextMenu>
+                              </DataGrid.ContextMenu>
+                              <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Name" Width="2*">
+                                  <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                      <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Text="{Binding Glyph}" Classes="file-glyph" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Name}" Classes="result-name" VerticalAlignment="Center" />
+                                      </StackPanel>
+                                    </DataTemplate>
+                                  </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Date modified" Binding="{Binding Modified}" Width="160" />
+                                <DataGridTextColumn Header="Type" Binding="{Binding Kind}" Width="140" />
+                                <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="95" />
+                              </DataGrid.Columns>
+                            </DataGrid>
+                            <ListBox
+                                     Classes="result-list"
+                                     IsVisible="{Binding DataContext.SelectedSearchTab.IsListView, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     ItemsSource="{Binding DataContext.BrowserItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      SelectedItem="{Binding DataContext.SelectedBrowserItem, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}"
+                                      SelectionMode="Multiple"
+                                      SelectionChanged="BrowserItemSelected"
+                                     PointerPressed="BrowserItemPointerPressed"
+                                     PointerReleased="BrowserItemPointerReleased"
+                                     DoubleTapped="BrowserItemDoubleTapped">
+                              <ListBox.ContextMenu>
+                                <ContextMenu Opened="BrowserContextMenu_Opened">
+                                  <MenuItem Header="Open" Click="BrowserOpen_Click" />
+                                  <Separator />
+                                  <MenuItem Header="Cut" Tag="cut" Click="BrowserCut_Click" />
+                                  <MenuItem Header="Copy" Tag="copy" Click="BrowserCopy_Click" />
+                                  <MenuItem Header="Paste" Tag="paste" Click="BrowserPaste_Click" />
+                                  <Separator />
+                                  <MenuItem Header="Rename" Tag="rename" Click="BrowserRename_Click" />
+                                  <MenuItem Header="Delete" Tag="delete" Click="BrowserDelete_Click" />
+                                  <Separator />
+                                  <MenuItem Header="New folder" Tag="new-folder" Click="BrowserNewFolder_Click" />
+                                  <MenuItem Header="Create shortcut" Tag="shortcut" Click="BrowserShortcut_Click" />
+                                  <MenuItem Header="Copy full path" Tag="copy-path" Click="BrowserCopyPath_Click" />
+                                  <MenuItem Header="Properties" Tag="properties" Click="BrowserProperties_Click" />
+                                  <Separator />
+                                  <MenuItem Header="Add or remove Favorite" Click="BrowserFavorite_Click" />
+                                </ContextMenu>
+                              </ListBox.ContextMenu>
+                              <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                  <Grid ColumnDefinitions="Auto,2*,*,120,90" ColumnSpacing="10" Margin="10,5">
+                                    <TextBlock Grid.Column="0" Text="{Binding Glyph}" Classes="file-glyph" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Name}" Classes="result-name" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="2" Text="{Binding Kind}" Classes="field-label" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="3" Text="{Binding Modified}" Classes="field-label" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="4" Text="{Binding SizeText}" Classes="field-label" VerticalAlignment="Center" TextAlignment="Right" />
+                                  </Grid>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                            <ListBox
+                                     Classes="result-list"
+                                     IsVisible="{Binding DataContext.SelectedSearchTab.IsSmallIconView, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     ItemsSource="{Binding DataContext.BrowserItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      SelectedItem="{Binding DataContext.SelectedBrowserItem, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}"
+                                      SelectionMode="Multiple"
+                                      SelectionChanged="BrowserItemSelected"
+                                     PointerPressed="BrowserItemPointerPressed"
+                                     PointerReleased="BrowserItemPointerReleased"
+                                     DoubleTapped="BrowserItemDoubleTapped">
+                              <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                              </ListBox.ItemsPanel>
+                              <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                  <Border Classes="result-icon-tile" Width="132" Height="120" Margin="6">
+                                    <StackPanel HorizontalAlignment="Center" Spacing="5">
+                                      <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="42" HorizontalAlignment="Center" />
+                                      <TextBlock Text="{Binding Name}" Classes="result-name" MaxWidth="116" TextAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                  </Border>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                            <ListBox
+                                     Classes="result-list"
+                                     IsVisible="{Binding DataContext.SelectedSearchTab.IsLargeIconView, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     ItemsSource="{Binding DataContext.BrowserItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     SelectedItem="{Binding DataContext.SelectedBrowserItem, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}"
+                                     SelectionMode="Multiple"
+                                     SelectionChanged="BrowserItemSelected"
+                                     PointerPressed="BrowserItemPointerPressed"
+                                     PointerReleased="BrowserItemPointerReleased"
+                                     DoubleTapped="BrowserItemDoubleTapped">
+                              <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                              </ListBox.ItemsPanel>
+                              <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                  <Border Classes="result-icon-tile" Width="210" Height="180" Margin="7">
+                                    <StackPanel HorizontalAlignment="Center" Spacing="8">
+                                      <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="58" HorizontalAlignment="Center" />
+                                      <TextBlock Text="{Binding Name}" Classes="result-name" MaxWidth="188" TextAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
+                                      <TextBlock Text="{Binding Kind}" Classes="result-path" MaxWidth="188" TextAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                  </Border>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                          </Grid>
+                      </Border>
+                    </Grid>
+                  </Grid>
+                </Grid>
+              </DataTemplate>
+            </ContentControl.ContentTemplate>
+          </ContentControl>
+        </Grid>
+      </Grid>
+
+    <Border Grid.Row="3" Classes="statusbar">
+      <TextBlock Text="{Binding Status}" Foreground="{DynamicResource QSurfer.MutedForeground}" />
+    </Border>
+  </Grid>
+</Window>

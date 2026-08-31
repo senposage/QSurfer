@@ -1,0 +1,66 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="QSurfer.Avalonia.HelpWindow"
+        Title="QSurfer Help"
+        Width="820"
+        Height="680"
+        MinWidth="640"
+        MinHeight="500"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Classes="app-header">
+      <StackPanel Spacing="4">
+        <TextBlock Text="QSurfer Help" Classes="app-title" />
+        <TextBlock Text="Fast, familiar search for shared Windows and NAS files." Classes="app-subtitle" />
+      </StackPanel>
+    </Border>
+
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="24,4,24,28">
+      <StackPanel>
+        <TextBlock Text="Search" Classes="help-section-title" />
+        <TextBlock Text="Enter a file or folder name, then press Enter or Search. Searches focus on names by default; turn on Search contents only when you need words found inside documents too." TextWrapping="Wrap" />
+        <TextBlock Text="Exact match finds whole words, so pie does not also find Pierce. Use File types to select one or more kinds of file. Select Folders when you want matching folders returned as well." TextWrapping="Wrap" Margin="0,8,0,0" />
+        <TextBlock Text="Clear filters resets file type, Exact match, Search contents, dates, and scope without closing the tab or changing its view." TextWrapping="Wrap" Margin="0,8,0,0" />
+
+        <TextBlock Text="Filters and dates" Classes="help-section-title" />
+        <TextBlock Text="Use From and To to narrow a search by modified date. To begins at today; leave From blank with To set to today to search all dates. Future dates are not available." TextWrapping="Wrap" />
+        <TextBlock Text="Scope narrows the current search when a suitable folder is selected. Load more asks the NAS for additional matches when a broad search reaches the current result limit." TextWrapping="Wrap" Margin="0,8,0,0" />
+
+        <TextBlock Text="Results" Classes="help-section-title" />
+        <TextBlock Text="Double-click a result to open it in its normal Windows application. Open does the same thing; Show opens File Explorer with the item selected. Choose Details, List, Small icons, or Large icons from View." TextWrapping="Wrap" />
+        <TextBlock Text="Arrange can keep folders before files or group matching files beneath their folders. In Details view, click a column heading to sort by it. Hold Ctrl while clicking another heading to add a second sort. Right-click results and choose Columns to hide or restore a column." TextWrapping="Wrap" Margin="0,8,0,0" />
+
+        <TextBlock Text="Browse folders" Classes="help-section-title" />
+        <TextBlock Text="Search and browsing share the same tab. Select a folder from the left pane, open a folder result, or type a mapped-drive or UNC path in the location field and press Enter. The folder list has Back, Forward, Up, Refresh, and clickable path breadcrumbs." TextWrapping="Wrap" />
+        <TextBlock Text="Double-click folders to browse them and files to open them. Right-click files or folders for Cut, Copy, Paste, Rename, Delete, New folder, Create shortcut, Copy full path, and Properties. Standard browser shortcuts can be changed in Settings." TextWrapping="Wrap" Margin="0,8,0,0" />
+
+        <TextBlock Text="Favorites and preview" Classes="help-section-title" />
+        <TextBlock Text="Use the star on a result to save it as a Favorite. Favorites are private to the current Windows user. The Favorites pane gives quick access to saved files and saved searches." TextWrapping="Wrap" />
+        <TextBlock Text="The Preview pane uses Windows preview handlers when one is installed. It keeps Open and Show close at hand; unsupported items and video remain details-only. Turn either side pane on or off from the toolbar." TextWrapping="Wrap" Margin="0,8,0,0" />
+
+        <TextBlock Text="Settings" Classes="help-section-title" />
+        <TextBlock Text="Connection holds the NAS address, port, HTTPS, certificate verification, and Qsirch sign-in. Opening and browsing files still uses the signed-in Windows user's normal network permissions." TextWrapping="Wrap" />
+        <TextBlock Text="Path mappings translate the share path reported by Qsirch to the Windows drive or UNC path people use. A mapping for a folder also covers every folder below it." TextWrapping="Wrap" Margin="0,8,0,0" />
+        <TextBlock Text="Rules only control what QSurfer displays; they never grant file access. Use wildcards such as @recycle\* to hide a folder's contents. Global rules are reserved for a local Administrator or a domain Domain Admin." TextWrapping="Wrap" Margin="0,8,0,0" />
+        <TextBlock Text="When adding a personal visibility rule, choose This user, This machine, or both. A machine rule matches the Windows computer name; a user rule matches the signed-in Windows account. Global rules apply to everyone and therefore keep the user field blank." TextWrapping="Wrap" Margin="0,8,0,0" />
+        <TextBlock Text="Behavior includes the result limit, search timeout, and initial and additional result batch sizes. Lower initial batches feel quicker; larger additional batches are useful when working through a broad search." TextWrapping="Wrap" Margin="0,8,0,0" />
+        <TextBlock Text="History manages saved searches and Favorites stored in the current Windows user's local database." TextWrapping="Wrap" Margin="0,8,0,0" />
+
+        <TextBlock Text="Shortcut and notification area" Classes="help-section-title" />
+        <TextBlock Text="The Shortcut settings page controls the global hide or show shortcut and common browser keys such as Copy, Cut, Paste, Rename, Delete, and New folder. The default global shortcut is Ctrl+S. If Windows reports that the shortcut is already in use, choose another combination. QSurfer can minimize or close to the notification area, and clicking its notification-area icon restores the window." TextWrapping="Wrap" />
+
+        <TextBlock Text="When something does not work" Classes="help-section-title" />
+        <TextBlock Text="Check the NAS address, port, HTTPS setting, certificate setting, and sign-in in Settings. If Open or Show cannot find an item, review Path mappings and confirm that the Windows path is available." TextWrapping="Wrap" />
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="2" Classes="statusbar">
+      <Grid ColumnDefinitions="*,Auto,*,Auto,Auto" ColumnSpacing="10">
+        <TextBlock Text="QSurfer  Written by Robert J Crane" Classes="field-label" VerticalAlignment="Center" />
+        <Button Grid.Column="1" Content="Close" Click="Close_Click" />
+        <Button Grid.Column="3" Content="GitHub" Click="GitHub_Click" ToolTip.Tip="Open the QSurfer project page" />
+        <Button Grid.Column="4" Content="Donate" Click="Donate_Click" ToolTip.Tip="Support QSurfer through PayPal" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

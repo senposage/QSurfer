@@ -1,0 +1,256 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="QSurfer.Avalonia.SettingsWindow"
+        x:Name="SettingsRoot"
+        Title="QSurfer settings"
+        Width="940"
+        Height="620"
+        MinWidth="760"
+        MinHeight="500"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="4">
+      <TextBlock Text="QSurfer settings" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock Text="Settings are kept for this computer. Shared connection defaults remain available for new workstations." Opacity="0.68" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <TabControl Grid.Row="1" Margin="0,22,0,18">
+      <TabItem Header="Connection">
+        <ScrollViewer Margin="12">
+          <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="14">
+            <TextBlock Grid.Row="0" Text="NAS host or IP" VerticalAlignment="Center" />
+            <TextBox Grid.Row="0" Grid.Column="1" x:Name="HostBox" Watermark="nas.example.local or 192.168.1.8" />
+            <TextBlock Grid.Row="1" Text="Port" VerticalAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="1" x:Name="PortBox" />
+            <TextBlock Grid.Row="2" Text="Username" VerticalAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="1" x:Name="UsernameBox" />
+            <TextBlock Grid.Row="3" Text="Password" VerticalAlignment="Center" />
+            <TextBox Grid.Row="3" Grid.Column="1" x:Name="PasswordBox" PasswordChar="•" />
+            <TextBlock Grid.Row="4" Text="Connection" VerticalAlignment="Top" />
+            <StackPanel Grid.Row="4" Grid.Column="1" Spacing="8">
+              <CheckBox x:Name="SslBox" Content="Use HTTPS" />
+              <CheckBox x:Name="VerifyCertificateBox" Content="Verify the HTTPS certificate" />
+            </StackPanel>
+            <Border Grid.Row="5" Grid.ColumnSpan="2" Classes="settings-note">
+              <TextBlock Text="QSurfer searches with this NAS account. Opening and browsing files uses the signed-in Windows user's usual network permissions." TextWrapping="Wrap" />
+            </Border>
+          </Grid>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Behavior">
+        <ScrollViewer Margin="12">
+          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="28">
+            <CheckBox Grid.Row="0" x:Name="ShowInTaskbarBox" Content="Show QSurfer in the taskbar" />
+            <CheckBox Grid.Row="0" Grid.Column="1" x:Name="MinimizeToTrayBox" Content="Minimize to the notification area" />
+            <CheckBox Grid.Row="1" x:Name="ExitToTrayBox" Content="Keep QSurfer in the notification area when closing" />
+            <CheckBox Grid.Row="1" Grid.Column="1" x:Name="ClearResultsWithQueryBox" Content="Clear results when the search text is cleared" />
+            <CheckBox Grid.Row="2" x:Name="AlwaysOnTopBox" Content="Always on top" />
+            <CheckBox Grid.Row="2" Grid.Column="1" x:Name="FoldersFirstBox" Content="Show folders before files" />
+            <CheckBox Grid.Row="3" x:Name="DefaultSearchContentsBox" Content="Search file contents by default" />
+            <CheckBox Grid.Row="3" Grid.Column="1" x:Name="HighlightMatchesBox" Content="Highlight matching text" />
+            <CheckBox Grid.Row="4" x:Name="PreviewPaneBox" Content="Show preview pane by default" />
+            <CheckBox Grid.Row="4" Grid.Column="1" x:Name="ShowInternalPathsBox" Content="Show Qsirch internal paths" />
+            <CheckBox Grid.Row="5" x:Name="UseThumbnailsBox" Content="Use Qsirch thumbnails when available" />
+            <CheckBox Grid.Row="5" Grid.Column="1" x:Name="AllowDownloadBox" Content="Show Download when available" />
+            <TextBlock Grid.Row="6" Text="Theme" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="6" Grid.Column="1" x:Name="ThemeBox" SelectedIndex="0">
+              <ComboBoxItem Content="Follow Windows" Tag="system" />
+              <ComboBoxItem Content="Light" Tag="light" />
+              <ComboBoxItem Content="Dark" Tag="dark" />
+            </ComboBox>
+            <TextBlock Grid.Row="7" Text="Search result limit" VerticalAlignment="Center" />
+            <TextBox Grid.Row="7" Grid.Column="1" x:Name="ResultLimitBox" Watermark="500" />
+            <TextBlock Grid.Row="8" Text="Default view" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="8" Grid.Column="1" x:Name="ResultViewBox">
+              <ComboBoxItem Content="Details" Tag="details" />
+              <ComboBoxItem Content="List" Tag="list" />
+              <ComboBoxItem Content="Small icons" Tag="small_icons" />
+              <ComboBoxItem Content="Large icons" Tag="large_icons" />
+            </ComboBox>
+            <TextBlock Grid.Row="9" Text="Default arrangement" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="9" Grid.Column="1" x:Name="ResultSortBox">
+              <ComboBoxItem Content="Folder groups" Tag="folder" />
+              <ComboBoxItem Content="Recentness" Tag="recent" />
+              <ComboBoxItem Content="Name" Tag="name" />
+              <ComboBoxItem Content="Location" Tag="location" />
+              <ComboBoxItem Content="Date modified" Tag="modified" />
+              <ComboBoxItem Content="Type" Tag="type" />
+              <ComboBoxItem Content="Size" Tag="size" />
+            </ComboBox>
+            <TextBlock Grid.Row="10" Text="Search timeout (seconds)" VerticalAlignment="Center" />
+            <TextBox Grid.Row="10" Grid.Column="1" x:Name="SearchTimeoutBox" Watermark="90" />
+            <TextBlock Grid.Row="11" Text="Initial results" VerticalAlignment="Center" />
+            <TextBox Grid.Row="11" Grid.Column="1" x:Name="FirstPageSizeBox" Watermark="15" />
+            <TextBlock Grid.Row="12" Text="Additional results" VerticalAlignment="Center" />
+            <TextBox Grid.Row="12" Grid.Column="1" x:Name="NextPageSizeBox" Watermark="100" />
+          </Grid>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Path mappings">
+        <DockPanel Margin="12">
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,10,0,0">
+            <Button Content="Remove selected" Click="RemoveMapping_Click" />
+            <Button Content="Add mapping" Classes="primary" Click="AddMapping_Click" />
+          </StackPanel>
+          <Grid RowDefinitions="Auto,*" RowSpacing="8">
+            <TextBlock Text="Map the share path Qsirch reports to the Windows path people use. QSurfer prefers a mapped drive and falls back to a UNC path." Classes="field-label" TextWrapping="Wrap" />
+            <DataGrid Grid.Row="1" x:Name="MappingsGrid" AutoGenerateColumns="False">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="Qsirch share path" Binding="{Binding ShareRoot}" Width="*" />
+                <DataGridTextColumn Header="Windows path" Binding="{Binding MappedRoot}" Width="*" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </Grid>
+        </DockPanel>
+      </TabItem>
+
+      <TabItem Header="Rules">
+        <TabControl Margin="12">
+          <TabItem Header="Exclusions">
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12" Margin="0,10,0,0">
+              <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
+                <TextBlock Text="Folder exclusions" Classes="panel-title" />
+                    <DataGrid Grid.Row="1" x:Name="FolderRulesGrid" AutoGenerateColumns="False">
+                      <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Global" Width="70">
+                          <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                              <CheckBox HorizontalAlignment="Center"
+                                        IsChecked="{Binding IsGlobal, Mode=TwoWay}"
+                                        IsEnabled="{Binding #SettingsRoot.CanEditGlobalRules}" />
+                            </DataTemplate>
+                          </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Wildcard path" Binding="{Binding Pattern}" Width="*" />
+                  </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                  <Button Content="Remove" Click="RemoveFolderRule_Click" />
+                  <Button Content="Add" Classes="primary" Click="AddFolderRule_Click" />
+                </StackPanel>
+              </Grid>
+              <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" RowSpacing="8">
+                <TextBlock Text="File exclusions" Classes="panel-title" />
+                    <DataGrid Grid.Row="1" x:Name="FileRulesGrid" AutoGenerateColumns="False">
+                      <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Global" Width="70">
+                          <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                              <CheckBox HorizontalAlignment="Center"
+                                        IsChecked="{Binding IsGlobal, Mode=TwoWay}"
+                                        IsEnabled="{Binding #SettingsRoot.CanEditGlobalRules}" />
+                            </DataTemplate>
+                          </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Wildcard name" Binding="{Binding Pattern}" Width="*" />
+                  </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                  <Button Content="Remove" Click="RemoveFileRule_Click" />
+                  <Button Content="Add" Classes="primary" Click="AddFileRule_Click" />
+                </StackPanel>
+              </Grid>
+            </Grid>
+          </TabItem>
+          <TabItem Header="Visibility">
+            <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8" Margin="0,10,0,0">
+              <StackPanel Spacing="4">
+                <TextBlock Text="Visibility only hides results in QSurfer. It does not change NAS or Windows permissions. Allow rules override matching deny rules." Classes="field-label" TextWrapping="Wrap" />
+                <TextBlock Text="Global rules can only be changed by a local Administrator or a domain Domain Admin." Classes="field-label" TextWrapping="Wrap" IsVisible="{Binding #SettingsRoot.GlobalRulesAreLocked}" />
+                <StackPanel Orientation="Horizontal" Spacing="14" Margin="0,4,0,0">
+                  <TextBlock Text="New rules apply to:" Classes="field-label" VerticalAlignment="Center" />
+                  <CheckBox x:Name="VisibilityThisMachineBox" Content="This machine" />
+                  <CheckBox x:Name="VisibilityThisUserBox" Content="This user" IsChecked="True" />
+                </StackPanel>
+              </StackPanel>
+              <DataGrid Grid.Row="1"
+                        x:Name="VisibilityRulesGrid"
+                        AutoGenerateColumns="False"
+                        CanUserResizeColumns="True"
+                        CanUserSortColumns="False"
+                        MinColumnWidth="72">
+                <DataGrid.Columns>
+                  <DataGridTemplateColumn Header="Global" Width="0.8*" MinWidth="72">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate>
+                        <CheckBox HorizontalAlignment="Center"
+                                  IsChecked="{Binding IsGlobal, Mode=TwoWay}"
+                                  IsEnabled="{Binding #SettingsRoot.CanEditGlobalRules}"
+                                  Checked="VisibilityGlobalRule_Checked" />
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
+                  <DataGridTextColumn Header="Access" Binding="{Binding Access}" Width="0.9*" MinWidth="78" />
+                  <DataGridTemplateColumn Header="User or domain user" Width="1.8*" MinWidth="150">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate>
+                        <TextBox Text="{Binding Identity, Mode=TwoWay}" IsReadOnly="{Binding IsGlobal}" Watermark="Blank for global rules" />
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
+                  <DataGridTextColumn Header="Wildcard path" Binding="{Binding Pattern}" Width="3*" MinWidth="220" />
+                </DataGrid.Columns>
+              </DataGrid>
+              <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <Button Content="Remove" Click="RemoveVisibilityRule_Click" />
+                <Button Content="Add deny" Click="AddDenyRule_Click" />
+                <Button Content="Add allow" Classes="primary" Click="AddAllowRule_Click" />
+              </StackPanel>
+            </Grid>
+          </TabItem>
+        </TabControl>
+      </TabItem>
+
+      <TabItem Header="History">
+        <StackPanel Margin="12" Spacing="12" MaxWidth="520">
+          <CheckBox x:Name="HistoryEnabledBox" Content="Keep favorites and saved searches for this Windows user" />
+          <TextBlock Text="Saved data is stored in a local SQLite database. It stays personal to the current Windows user and does not make the portable package grow with every search." Classes="field-label" TextWrapping="Wrap" />
+          <CheckBox x:Name="ClearHistoryBox" Content="Clear this user's saved results when saving" />
+          <CheckBox x:Name="ClearStarredBox" Content="Also clear favorites" IsEnabled="{Binding #ClearHistoryBox.IsChecked}" />
+          <Button Content="Reset this user's saved data" HorizontalAlignment="Left" Click="ResetDatabase_Click" />
+        </StackPanel>
+      </TabItem>
+      <TabItem Header="Shortcut">
+        <ScrollViewer Margin="12">
+          <StackPanel Spacing="14" MaxWidth="620">
+            <StackPanel Spacing="6">
+              <TextBlock Text="Hide or show QSurfer" Classes="panel-title" />
+              <TextBox x:Name="HotkeyBox" Watermark="Not assigned" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+              <TextBlock Text="Press a key combination to assign it. Hold Escape to clear it. The global shortcut needs Ctrl, Alt, or Shift." Classes="field-label" TextWrapping="Wrap" />
+              <TextBlock x:Name="HotkeyStatus" Classes="field-label" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Spacing="8">
+              <TextBlock Text="In-app shortcuts" Classes="panel-title" />
+              <TextBlock Text="Click a field and press a key or combination. Hold Escape to leave that action unassigned." Classes="field-label" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="170,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8" ColumnSpacing="12">
+                <TextBlock Text="Focus search" VerticalAlignment="Center" /><TextBox Grid.Column="1" x:Name="FocusSearchShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="1" Text="Refresh" VerticalAlignment="Center" /><TextBox Grid.Row="1" Grid.Column="1" x:Name="RefreshShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="2" Text="Back" VerticalAlignment="Center" /><TextBox Grid.Row="2" Grid.Column="1" x:Name="BackShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="3" Text="Forward" VerticalAlignment="Center" /><TextBox Grid.Row="3" Grid.Column="1" x:Name="ForwardShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="4" Text="Up one folder" VerticalAlignment="Center" /><TextBox Grid.Row="4" Grid.Column="1" x:Name="UpShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="5" Text="Open" VerticalAlignment="Center" /><TextBox Grid.Row="5" Grid.Column="1" x:Name="OpenShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="6" Text="Copy selected item" VerticalAlignment="Center" /><TextBox Grid.Row="6" Grid.Column="1" x:Name="CopyPathShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="7" Text="Cut selected item" VerticalAlignment="Center" /><TextBox Grid.Row="7" Grid.Column="1" x:Name="CutShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="8" Text="Paste" VerticalAlignment="Center" /><TextBox Grid.Row="8" Grid.Column="1" x:Name="PasteShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="9" Text="Rename" VerticalAlignment="Center" /><TextBox Grid.Row="9" Grid.Column="1" x:Name="RenameShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="10" Text="Delete" VerticalAlignment="Center" /><TextBox Grid.Row="10" Grid.Column="1" x:Name="DeleteShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="11" Text="New folder" VerticalAlignment="Center" /><TextBox Grid.Row="11" Grid.Column="1" x:Name="NewFolderShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+                <TextBlock Grid.Row="12" Text="Add or remove Favorite" VerticalAlignment="Center" /><TextBox Grid.Row="12" Grid.Column="1" x:Name="FavoriteShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+              </Grid>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+      <TextBlock x:Name="ValidationMessage" Foreground="#FFD93D5D" TextWrapping="Wrap" VerticalAlignment="Center" IsVisible="False" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+        <Button Content="Cancel" Click="Cancel_Click" />
+        <Button Classes="primary" Content="Save" Click="Save_Click" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

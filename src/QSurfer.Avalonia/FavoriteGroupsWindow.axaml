@@ -1,0 +1,29 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="QSurfer.Avalonia.FavoriteGroupsWindow"
+        Title="Favorite groups"
+        Width="420"
+        Height="430"
+        MinWidth="360"
+        MinHeight="320"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="12" Margin="18">
+    <TextBlock Text="Choose a favorites folder" Classes="panel-title" />
+    <TreeView Grid.Row="1" x:Name="GroupTree" ItemsSource="{Binding Groups}" SelectionChanged="GroupTree_SelectionChanged">
+      <TreeView.ItemTemplate>
+        <TreeDataTemplate ItemsSource="{Binding Children}">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <TextBlock Text="{Binding Name}" />
+          </StackPanel>
+        </TreeDataTemplate>
+      </TreeView.ItemTemplate>
+    </TreeView>
+    <TextBox Grid.Row="2" x:Name="NewGroupBox" Watermark="New folder" />
+    <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+      <TextBlock Text="A new name is created inside the selected folder." Classes="field-label" VerticalAlignment="Center" TextWrapping="Wrap" />
+      <Button Grid.Column="1" Content="Cancel" Click="Cancel_Click" />
+      <Button Grid.Column="2" Content="Save" Classes="primary" Click="Save_Click" />
+    </Grid>
+  </Grid>
+</Window>
