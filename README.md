@@ -15,6 +15,12 @@ UNC paths.
 - Keep favorites, groups, saved searches, and recent searches private to each Windows user
 - Support light, dark, and Follow Windows themes, taskbar/tray behavior, and a configurable global hotkey
 
+## Screenshots
+
+![QSurfer light theme](docs/screenshots/qsurfer-light.png)
+
+![QSurfer dark theme](docs/screenshots/qsurfer-dark.png)
+
 ## Build
 
 Requirements: .NET SDK 9 or later on Windows.
@@ -45,3 +51,7 @@ session, database, or log.
 QSurfer builds on the Qsirch REST API work from
 [iios-co/qsirch](https://github.com/iios-co/qsirch). See [NOTICE](NOTICE)
 and [LICENSE](LICENSE).
+
+The Avalonia explorer experience was designed with
+[JANECEA/FileSurfer](https://github.com/JANECEA/FileSurfer) as a reference.
+No FileSurfer source code or assets are included in this repository.

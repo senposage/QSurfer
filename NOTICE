@@ -13,6 +13,16 @@ behavior, mapped-drive and UNC handling, and related UI additions are
 distributed under the same MIT License unless a later repository revision
 states otherwise.
 
+FileSurfer acknowledgement:
+The Avalonia explorer experience was designed with FileSurfer as a reference:
+
+  https://github.com/JANECEA/FileSurfer
+
+FileSurfer is copyright JANECEA and is distributed under GPL-3.0. No
+FileSurfer source code or assets are included in this repository. If a future
+revision incorporates FileSurfer source code, that revision must satisfy the
+applicable GPL-3.0 licensing requirements.
+
 Donationware note:
 The software remains MIT-licensed and free to use. The in-app PayPal donation
 button is optional support for the GUI maintenance work.
