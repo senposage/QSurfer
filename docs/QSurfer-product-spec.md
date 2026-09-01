@@ -181,3 +181,16 @@ required workflow above is tested from the packaged binary.
 No feature is considered migrated because its control exists. It is migrated
 only when its complete workflow, persistence scope, empty/error state,
 performance behavior, and corresponding menu/keyboard actions are present.
+
+## 1.1 Hardening Focus
+
+- **Local search delegation:** searches rooted on `C:\` and standard local user
+  folders should use Windows search and Explorer facilities rather than the
+  NAS/Qsirch pipeline. NAS searches remain Qsirch-backed.
+- **Preview responsiveness:** reduce native preview-handler startup hesitation,
+  preserve a warm host when safe, and make slow or unsupported handlers fail
+  clearly without stalling the results workspace.
+- **Live diagnostics review:** collect and review the separate client/session
+  and search logs after a normal office work session. Resolve exceptions,
+  repeated authentication, slow operations, UI stalls, and noisy logging before
+  adding new feature scope.
