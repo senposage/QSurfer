@@ -100,13 +100,16 @@
       <Setter Property="CornerRadius" Value="4" />
       <Setter Property="BorderBrush" Value="{DynamicResource QSurfer.SurfaceBorder}" />
       <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
     <Style Selector="ColorPicker.theme-color-picker">
-      <Setter Property="Width" Value="30" />
+      <Setter Property="Width" Value="46" />
       <Setter Property="Height" Value="28" />
       <Setter Property="IsAlphaEnabled" Value="False" />
       <Setter Property="IsAlphaVisible" Value="False" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
     <Style Selector="Border.theme-preview">

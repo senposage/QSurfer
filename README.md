@@ -17,9 +17,17 @@ UNC paths.
 
 ## Screenshots
 
+### Ready to connect
+
 ![QSurfer light theme](docs/screenshots/qsurfer-light.png)
 
 ![QSurfer dark theme](docs/screenshots/qsurfer-dark.png)
+
+### Browsing shared folders
+
+![QSurfer light browser](docs/screenshots/qsurfer-light-browser.png)
+
+![QSurfer dark browser](docs/screenshots/qsurfer-dark-browser.png)
 
 ## Build
 

@@ -150,35 +150,35 @@
             <Grid ColumnDefinitions="*,*" ColumnSpacing="30">
               <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
                 <TextBlock Text="Light mode" Classes="panel-title" />
-                <Grid Grid.Row="1" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="1" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Main surface" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="LightSurfacePicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="LightSurfaceSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="LightSurfaceColorBox" Watermark="#FFFFFFFF" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="2" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="2" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Accent" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="LightAccentPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="LightAccentSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="LightAccentColorBox" Watermark="#FF0067B8" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="3" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="3" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Selected result" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="LightSelectionPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="LightSelectionSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="LightSelectionColorBox" Watermark="#FFD7EBFF" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="4" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="4" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Hover" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="LightHoverPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="LightHoverSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="LightHoverColorBox" Watermark="#FFE8F3FD" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="5" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="5" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Match highlight" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="LightMatchPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="LightMatchSwatch" Classes="color-swatch" />
@@ -190,35 +190,35 @@
 
               <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
                 <TextBlock Text="Dark mode" Classes="panel-title" />
-                <Grid Grid.Row="1" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="1" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Main surface" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="DarkSurfacePicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="DarkSurfaceSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="DarkSurfaceColorBox" Watermark="#FF242830" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="2" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="2" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Accent" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="DarkAccentPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="DarkAccentSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="DarkAccentColorBox" Watermark="#FF36B9AD" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="3" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="3" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Selected result" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="DarkSelectionPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="DarkSelectionSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="DarkSelectionColorBox" Watermark="#FF27495F" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="4" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="4" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Hover" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="DarkHoverPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="DarkHoverSwatch" Classes="color-swatch" />
                   </ColorPicker>
                   <TextBox Grid.Column="2" x:Name="DarkHoverColorBox" Watermark="#FF2C3847" TextChanged="ThemeColorTextChanged" />
                 </Grid>
-                <Grid Grid.Row="5" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                <Grid Grid.Row="5" ColumnDefinitions="120,46,*" ColumnSpacing="10">
                   <TextBlock Text="Match highlight" VerticalAlignment="Center" />
                   <ColorPicker Grid.Column="1" x:Name="DarkMatchPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
                     <Border x:Name="DarkMatchSwatch" Classes="color-swatch" />
