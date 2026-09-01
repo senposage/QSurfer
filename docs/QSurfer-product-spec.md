@@ -194,3 +194,7 @@ performance behavior, and corresponding menu/keyboard actions are present.
   and search logs after a normal office work session. Resolve exceptions,
   repeated authentication, slow operations, UI stalls, and noisy logging before
   adding new feature scope.
+- **Linux build and verification:** produce a Linux package and verify the
+  search, browsing, path resolution, favorites, themes, and unsupported-preview
+  behavior on Linux. Keep Windows shell integrations as platform-specific
+  enhancements with clear Linux fallbacks.
