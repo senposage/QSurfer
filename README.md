@@ -29,10 +29,10 @@ Run the development app with:
 dotnet run --project src/QSurfer.Avalonia/QSurfer.Avalonia.csproj
 ```
 
-`build-qsurfer.bat` creates a portable Windows package in `dist/QSurfer`.
-It copies only `config.template.json`; configure the NAS connection through
-Settings after first launch. Never commit a working `config.json`, session,
-database, or log.
+`build-qsurfer.bat` recreates a portable Windows package in `dist/QSurfer`.
+It includes only a blank `config/config.json` template; configure the NAS
+connection through Settings after first launch. Never commit a working config,
+session, database, or log.
 
 ## Project Layout
 
