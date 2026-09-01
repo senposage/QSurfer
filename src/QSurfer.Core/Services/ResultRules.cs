@@ -40,6 +40,10 @@ public sealed class ResultRules
         foreach (var rule in _config.Exclude.FolderRules.Select(x => x.Pattern).Where(x => !string.IsNullOrWhiteSpace(x)))
         {
             var normalized = Normalize(rule);
+            if (_config.Behavior.ShowRecoverySystemFolders && IsRecoverySystemFolderRule(normalized))
+            {
+                continue;
+            }
             if (HasWildcard(normalized))
             {
                 if (candidates.Any(candidate => RuleMatchesPath(candidate, normalized)) ||
@@ -72,6 +76,11 @@ public sealed class ResultRules
 
         return false;
     }
+
+    private static bool IsRecoverySystemFolderRule(string rule) =>
+        rule.StartsWith("@recently-snapshot", StringComparison.OrdinalIgnoreCase) ||
+        rule.StartsWith("@recycle", StringComparison.OrdinalIgnoreCase) ||
+        rule.StartsWith("#recycle", StringComparison.OrdinalIgnoreCase);
 
     private bool IsVisibilityHidden(SearchResult result)
     {

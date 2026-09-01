@@ -206,15 +206,23 @@ public sealed class AppConfig
         ClearResultsWithQuery = behavior.ClearResultsWithQuery,
         GlobalHotkey = behavior.GlobalHotkey,
         KeyboardShortcuts = CloneKeyboardShortcuts(behavior.KeyboardShortcuts),
+        ThemeColors = CloneThemeColors(behavior.ThemeColors),
+        UseWindowsAccentColor = behavior.UseWindowsAccentColor,
+        FavoritesPaneWidth = behavior.FavoritesPaneWidth,
+        PreviewPaneWidth = behavior.PreviewPaneWidth,
+        FavoritesNavigationSplit = behavior.FavoritesNavigationSplit,
+        NavigationExpandedPaths = behavior.NavigationExpandedPaths.ToList(),
         Theme = behavior.Theme,
         HighlightMatches = behavior.HighlightMatches,
-        ShowQsirchInternalPaths = behavior.ShowQsirchInternalPaths,
-        ExactMatch = behavior.ExactMatch,
+        ShowRecoverySystemFolders = behavior.ShowRecoverySystemFolders,
+        ShowQSurferSafetyCopies = behavior.ShowQSurferSafetyCopies,
+        ShowHiddenTemporaryFiles = behavior.ShowHiddenTemporaryFiles,
+        FlattenRecycleBin = behavior.FlattenRecycleBin,
         UseQsirchThumbnails = behavior.UseQsirchThumbnails,
         SearchContents = behavior.SearchContents,
         PreviewPane = behavior.PreviewPane,
-        AllowDownload = behavior.AllowDownload,
-        FoldersFirst = behavior.FoldersFirst,
+        OriginalRestorePolicy = behavior.OriginalRestorePolicy,
+        OneTimeFolderRestore = behavior.OneTimeFolderRestore,
         ResultView = behavior.ResultView,
         ResultSort = behavior.ResultSort,
         VisibleDetailColumns = behavior.VisibleDetailColumns.ToList(),
@@ -243,6 +251,24 @@ public sealed class AppConfig
         NewFolder = shortcuts.NewFolder,
         Favorite = shortcuts.Favorite,
     };
+    private static ThemeColorConfig CloneThemeColors(ThemeColorConfig? colors)
+    {
+        colors ??= new ThemeColorConfig();
+        return new ThemeColorConfig
+        {
+            LightSurface = colors.LightSurface,
+            LightAccent = colors.LightAccent,
+            LightSelection = colors.LightSelection,
+            LightHover = colors.LightHover,
+            LightMatch = colors.LightMatch,
+            DarkSurface = colors.DarkSurface,
+            DarkAccent = colors.DarkAccent,
+            DarkSelection = colors.DarkSelection,
+            DarkHover = colors.DarkHover,
+            DarkMatch = colors.DarkMatch,
+        };
+    }
+
 
     private sealed record ConnectionDefaults(string Host, int Port, bool Ssl, bool SslVerify, string User, string Password);
 }
@@ -351,17 +377,41 @@ public sealed class BehaviorConfig
     [JsonPropertyName("keyboard_shortcuts")]
     public KeyboardShortcutConfig KeyboardShortcuts { get; set; } = new();
 
+    [JsonPropertyName("theme_colors")]
+    public ThemeColorConfig ThemeColors { get; set; } = new();
+
+    [JsonPropertyName("use_windows_accent_color")]
+    public bool UseWindowsAccentColor { get; set; }
+
+    [JsonPropertyName("favorites_pane_width")]
+    public int FavoritesPaneWidth { get; set; } = 238;
+
+    [JsonPropertyName("preview_pane_width")]
+    public int PreviewPaneWidth { get; set; } = 280;
+
+    [JsonPropertyName("favorites_navigation_split")]
+    public double FavoritesNavigationSplit { get; set; } = 0.6;
+
+    [JsonPropertyName("navigation_expanded_paths")]
+    public List<string> NavigationExpandedPaths { get; set; } = [];
+
     [JsonPropertyName("theme")]
     public string Theme { get; set; } = "system";
 
     [JsonPropertyName("highlight_matches")]
     public bool HighlightMatches { get; set; } = true;
 
-    [JsonPropertyName("show_qsirch_internal_paths")]
-    public bool ShowQsirchInternalPaths { get; set; }
+    [JsonPropertyName("show_recovery_system_folders")]
+    public bool ShowRecoverySystemFolders { get; set; }
 
-    [JsonPropertyName("exact_match")]
-    public bool ExactMatch { get; set; }
+    [JsonPropertyName("show_qsurfer_safety_copies")]
+    public bool ShowQSurferSafetyCopies { get; set; }
+
+    [JsonPropertyName("show_hidden_temporary_files")]
+    public bool ShowHiddenTemporaryFiles { get; set; }
+
+    [JsonPropertyName("flatten_recycle_bin")]
+    public bool FlattenRecycleBin { get; set; } = true;
 
     [JsonPropertyName("use_qsirch_thumbnails")]
     public bool UseQsirchThumbnails { get; set; }
@@ -372,11 +422,11 @@ public sealed class BehaviorConfig
     [JsonPropertyName("preview_pane")]
     public bool PreviewPane { get; set; }
 
-    [JsonPropertyName("allow_download")]
-    public bool AllowDownload { get; set; }
+    [JsonPropertyName("original_restore_policy")]
+    public string OriginalRestorePolicy { get; set; } = "files";
 
-    [JsonPropertyName("folders_first")]
-    public bool FoldersFirst { get; set; } = true;
+    [JsonPropertyName("one_time_folder_restore")]
+    public bool OneTimeFolderRestore { get; set; }
 
     [JsonPropertyName("result_view")]
     public string ResultView { get; set; } = "details";
@@ -400,6 +450,40 @@ public sealed class BehaviorConfig
     public int MaxSearchResults { get; set; } = 500;
 
 }
+
+public sealed class ThemeColorConfig
+{
+    [JsonPropertyName("light_surface")]
+    public string LightSurface { get; set; } = "#FFFFFFFF";
+
+    [JsonPropertyName("light_accent")]
+    public string LightAccent { get; set; } = "#FF0067B8";
+
+    [JsonPropertyName("light_selection")]
+    public string LightSelection { get; set; } = "#FFD7EBFF";
+
+    [JsonPropertyName("light_hover")]
+    public string LightHover { get; set; } = "#FFE8F3FD";
+
+    [JsonPropertyName("light_match")]
+    public string LightMatch { get; set; } = "#FFFFE29A";
+
+    [JsonPropertyName("dark_surface")]
+    public string DarkSurface { get; set; } = "#FF242830";
+
+    [JsonPropertyName("dark_accent")]
+    public string DarkAccent { get; set; } = "#FF36B9AD";
+
+    [JsonPropertyName("dark_selection")]
+    public string DarkSelection { get; set; } = "#FF27495F";
+
+    [JsonPropertyName("dark_hover")]
+    public string DarkHover { get; set; } = "#FF2C3847";
+
+    [JsonPropertyName("dark_match")]
+    public string DarkMatch { get; set; } = "#FF725826";
+}
+
 
 public sealed class KeyboardShortcutConfig
 {

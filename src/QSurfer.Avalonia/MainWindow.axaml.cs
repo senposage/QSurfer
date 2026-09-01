@@ -19,6 +19,8 @@ namespace QSurfer.Avalonia;
 public sealed partial class MainWindow : Window
 {
     private const int PreviewSelectionDelayMilliseconds = 240;
+    private const double WideSearchLayoutWidth = 1160;
+    private const double WideFilterLayoutWidth = 1500;
     private readonly MainWindowViewModel _viewModel = new();
     private bool _exitRequested;
     private CancellationTokenSource? _previewCancellation;
@@ -35,17 +37,25 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = _viewModel;
+        _favoritesPaneWidth = new GridLength(Math.Clamp(_viewModel.Config.Behavior.FavoritesPaneWidth, 160, 600), GridUnitType.Pixel);
+        _previewPaneWidth = new GridLength(Math.Clamp(_viewModel.Config.Behavior.PreviewPaneWidth, 220, 700), GridUnitType.Pixel);
         ApplyWindowBehavior();
         KeyDown += MainWindow_KeyDown;
         KeyUp += (_, args) => _controlKeyDown = args.KeyModifiers.HasFlag(KeyModifiers.Control);
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         Opened += (_, _) =>
         {
+            ApplyResponsiveCommandLayout();
             UpdateSidePaneColumns();
+            ApplyFavoritesNavigationSplit();
             ApplyDetailColumnVisibility();
+            ApplyWindowChrome();
         };
+        SizeChanged += (_, _) => ApplyResponsiveCommandLayout();
+        Activated += (_, _) => ApplyWindowChrome();
         Closed += (_, _) =>
         {
+            PersistPaneLayout();
             _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
             ClearNativePreview();
             _viewModel.Dispose();
@@ -72,6 +82,177 @@ public sealed partial class MainWindow : Window
         AppLogger.Info("app", "main window restored from tray");
     }
 
+    private void ApplyResponsiveCommandLayout()
+    {
+        var searchAddressBand = FindVisualControl<Grid>("SearchAddressBand");
+        var addressControlsGroup = FindVisualControl<Grid>("AddressControlsGroup");
+        var addressSearchDivider = FindVisualControl<Border>("AddressSearchDivider");
+        var searchControlsGroup = FindVisualControl<Grid>("SearchControlsGroup");
+        var filterControlsGrid = FindVisualControl<Grid>("FilterControlsGrid");
+        var navigateBackButton = FindVisualControl<Button>("NavigateBackButton");
+        var navigateForwardButton = FindVisualControl<Button>("NavigateForwardButton");
+        var navigateUpButton = FindVisualControl<Button>("NavigateUpButton");
+        var addressModeLabel = FindVisualControl<TextBlock>("AddressModeLabel");
+        var addressTextBox = FindVisualControl<TextBox>("AddressTextBox");
+        var controls = new[]
+        {
+            FindVisualControl<Control>("ExactMatchFilter"),
+            FindVisualControl<Control>("SearchContentsFilter"),
+            FindVisualControl<Control>("TypeFilterToggle"),
+            FindVisualControl<Control>("DatePresetFilter"),
+            FindVisualControl<Control>("FromFilterLabel"),
+            FindVisualControl<Control>("DateFromFilter"),
+            FindVisualControl<Control>("ToFilterLabel"),
+            FindVisualControl<Control>("DateToFilter"),
+            FindVisualControl<Control>("ClearFiltersButton"),
+            FindVisualControl<Control>("ScopeFilterLabel"),
+            FindVisualControl<Control>("ScopeFilter"),
+            FindVisualControl<Control>("ArrangeFilterLabel"),
+            FindVisualControl<Control>("ArrangeFilter"),
+            FindVisualControl<Control>("ViewFilterLabel"),
+            FindVisualControl<Control>("ViewFilter"),
+            FindVisualControl<Control>("LoadMoreButton"),
+        };
+        if (searchAddressBand is null || addressControlsGroup is null || addressSearchDivider is null ||
+            searchControlsGroup is null || filterControlsGrid is null || navigateBackButton is null ||
+            navigateForwardButton is null || navigateUpButton is null || addressModeLabel is null ||
+            addressTextBox is null || controls.Any(control => control is null))
+        {
+            return;
+        }
+
+        var exactMatchFilter = controls[0]!;
+        var searchContentsFilter = controls[1]!;
+        var typeFilterToggle = controls[2]!;
+        var datePresetFilter = controls[3]!;
+        var fromFilterLabel = controls[4]!;
+        var dateFromFilter = controls[5]!;
+        var toFilterLabel = controls[6]!;
+        var dateToFilter = controls[7]!;
+        var clearFiltersButton = controls[8]!;
+        var scopeFilterLabel = controls[9]!;
+        var scopeFilter = controls[10]!;
+        var arrangeFilterLabel = controls[11]!;
+        var arrangeFilter = controls[12]!;
+        var viewFilterLabel = controls[13]!;
+        var viewFilter = controls[14]!;
+        var loadMoreButton = controls[15]!;
+
+        var isBrowsing = _viewModel.IsNavigationVisible;
+        var useWideSearchLayout = Bounds.Width >= WideSearchLayoutWidth;
+        if (useWideSearchLayout)
+        {
+            SetGridRows(searchAddressBand, GridLength.Auto);
+            SetGridColumns(
+                searchAddressBand,
+                isBrowsing
+                    ? [new GridLength(2, GridUnitType.Star), new GridLength(14), new GridLength(3, GridUnitType.Star)]
+                    : [GridLength.Auto, new GridLength(14), new GridLength(1, GridUnitType.Star)]);
+        }
+        else
+        {
+            SetGridRows(searchAddressBand, GridLength.Auto, GridLength.Auto);
+            SetGridColumns(searchAddressBand, new GridLength(1, GridUnitType.Star));
+        }
+        searchAddressBand.RowSpacing = useWideSearchLayout ? 0 : 8;
+        Grid.SetRow(addressControlsGroup, 0);
+        Grid.SetColumn(addressControlsGroup, 0);
+        Grid.SetRow(searchControlsGroup, useWideSearchLayout ? 0 : 1);
+        Grid.SetColumn(searchControlsGroup, useWideSearchLayout ? 2 : 0);
+        Grid.SetRow(addressSearchDivider, 0);
+        Grid.SetColumn(addressSearchDivider, 1);
+        addressSearchDivider.IsVisible = useWideSearchLayout;
+        addressControlsGroup.HorizontalAlignment = isBrowsing ? HorizontalAlignment.Stretch : HorizontalAlignment.Left;
+        navigateBackButton.IsVisible = isBrowsing;
+        navigateForwardButton.IsVisible = isBrowsing;
+        navigateUpButton.IsVisible = isBrowsing;
+        addressModeLabel.IsVisible = !isBrowsing;
+        addressTextBox.MaxWidth = isBrowsing ? double.PositiveInfinity : 260;
+        addressTextBox.Watermark = isBrowsing ? "Address" : "Browse address";
+
+        var useWideFilterLayout = Bounds.Width >= WideFilterLayoutWidth;
+        if (useWideFilterLayout)
+        {
+            SetGridRows(filterControlsGrid, GridLength.Auto);
+            SetGridColumns(filterControlsGrid, Enumerable.Repeat(GridLength.Auto, 16).ToArray());
+            filterControlsGrid.RowSpacing = 0;
+            typeFilterToggle.Width = 152;
+            datePresetFilter.Width = 130;
+            dateFromFilter.Width = 132;
+            dateToFilter.Width = 132;
+
+            SetGridPosition(exactMatchFilter, 0, 0);
+            SetGridPosition(searchContentsFilter, 0, 1);
+            SetGridPosition(typeFilterToggle, 0, 2);
+            SetGridPosition(datePresetFilter, 0, 3);
+            SetGridPosition(fromFilterLabel, 0, 4);
+            SetGridPosition(dateFromFilter, 0, 5);
+            SetGridPosition(toFilterLabel, 0, 6);
+            SetGridPosition(dateToFilter, 0, 7);
+            SetGridPosition(clearFiltersButton, 0, 8);
+            SetGridPosition(scopeFilterLabel, 0, 9);
+            SetGridPosition(scopeFilter, 0, 10);
+            SetGridPosition(arrangeFilterLabel, 0, 11);
+            SetGridPosition(arrangeFilter, 0, 12);
+            SetGridPosition(viewFilterLabel, 0, 13);
+            SetGridPosition(viewFilter, 0, 14);
+            SetGridPosition(loadMoreButton, 0, 15);
+            return;
+        }
+
+        SetGridRows(filterControlsGrid, GridLength.Auto, GridLength.Auto);
+        SetGridColumns(filterControlsGrid, Enumerable.Repeat(GridLength.Auto, 9).ToArray());
+        filterControlsGrid.RowSpacing = 8;
+        typeFilterToggle.Width = 140;
+        datePresetFilter.Width = 116;
+        dateFromFilter.Width = 116;
+        dateToFilter.Width = 116;
+
+        SetGridPosition(exactMatchFilter, 0, 0);
+        SetGridPosition(searchContentsFilter, 0, 1);
+        SetGridPosition(typeFilterToggle, 0, 2);
+        SetGridPosition(datePresetFilter, 0, 3);
+        SetGridPosition(fromFilterLabel, 0, 4);
+        SetGridPosition(dateFromFilter, 0, 5);
+        SetGridPosition(toFilterLabel, 0, 6);
+        SetGridPosition(dateToFilter, 0, 7);
+        SetGridPosition(clearFiltersButton, 0, 8);
+        SetGridPosition(scopeFilterLabel, 1, 0);
+        SetGridPosition(scopeFilter, 1, 1);
+        SetGridPosition(arrangeFilterLabel, 1, 2);
+        SetGridPosition(arrangeFilter, 1, 3);
+        SetGridPosition(viewFilterLabel, 1, 4);
+        SetGridPosition(viewFilter, 1, 5);
+        SetGridPosition(loadMoreButton, 1, 6);
+    }
+
+    private T? FindVisualControl<T>(string name) where T : Control =>
+        this.GetVisualDescendants().OfType<T>().FirstOrDefault(control => control.Name == name);
+
+    private static void SetGridPosition(Control control, int row, int column)
+    {
+        Grid.SetRow(control, row);
+        Grid.SetColumn(control, column);
+    }
+
+    private static void SetGridRows(Grid grid, params GridLength[] heights)
+    {
+        grid.RowDefinitions.Clear();
+        foreach (var height in heights)
+        {
+            grid.RowDefinitions.Add(new RowDefinition(height));
+        }
+    }
+
+    private static void SetGridColumns(Grid grid, params GridLength[] widths)
+    {
+        grid.ColumnDefinitions.Clear();
+        foreach (var width in widths)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition(width));
+        }
+    }
+
     internal void ExitApplication()
     {
         _exitRequested = true;
@@ -91,6 +272,12 @@ public sealed partial class MainWindow : Window
     private async void MainWindow_KeyDown(object? sender, KeyEventArgs e)
     {
         _controlKeyDown = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        if (e.Key == Key.F1)
+        {
+            await OpenHelpAsync();
+            e.Handled = true;
+            return;
+        }
         if (IsTextInputFocused() && !MatchesShortcut(_viewModel.Config.Behavior.KeyboardShortcuts.FocusSearch, e))
         {
             return;
@@ -207,27 +394,6 @@ public sealed partial class MainWindow : Window
     private void SearchTabGotFocus(object? sender, GotFocusEventArgs e) => _viewModel.ReturnToSearchResults();
 
     private void BrowserLocationGotFocus(object? sender, GotFocusEventArgs e) => _viewModel.EnterBrowseMode();
-
-    private void SearchTabPointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (!IsTabAction(e.Source))
-        {
-            _viewModel.ReturnToSearchResults();
-        }
-    }
-
-    private void SearchTabPointerReleased(object? sender, PointerReleasedEventArgs e)
-    {
-        if (!IsTabAction(e.Source))
-        {
-            _viewModel.ReturnToSearchResults();
-        }
-    }
-
-    private void SearchTabSelectionChanged(object? sender, SelectionChangedEventArgs e) => _viewModel.ReturnToSearchResults();
-
-    private static bool IsTabAction(object? source) => source is Visual visual &&
-        (visual is Button || visual.GetVisualAncestors().OfType<Button>().Any());
 
     private async void ToggleTabWorkspace_Click(object? sender, RoutedEventArgs e)
     {
@@ -358,6 +524,40 @@ public sealed partial class MainWindow : Window
 
     private async void BrowserOpen_Click(object? sender, RoutedEventArgs e) => await _viewModel.OpenSelectedBrowserItemAsync();
 
+    private async void RestoreRecycle_Click(object? sender, RoutedEventArgs e)
+    {
+        var items = SelectedBrowserItems();
+        if (items.Count == 0)
+        {
+            _viewModel.StatusMessage("Select one or more Recycle Bin items to restore.");
+            return;
+        }
+
+        var restoreTargets = NasFileBrowser.GetRecycleRestoreTargets(items);
+        if (restoreTargets.Count != items.Count)
+        {
+            _viewModel.StatusMessage("One or more selected items do not have a recoverable original location.");
+            return;
+        }
+
+        var filesToReplace = restoreTargets
+            .Where(target => !target.Item.IsFolder && File.Exists(target.DestinationPath))
+            .ToList();
+        if (filesToReplace.Count > 0)
+        {
+            var message = filesToReplace.Count == 1
+                ? $"Restore {items.Count:n0} item(s)? The live file \"{filesToReplace[0].Item.Name}\" will be retained as a hidden, read-only .qsurfer copy."
+                : $"Restore {items.Count:n0} item(s)? {filesToReplace.Count:n0} live files will be retained as hidden, read-only .qsurfer copies.";
+            var confirm = new ConfirmationWindow("Restore from Recycle Bin", message, "Restore");
+            if (await confirm.ShowDialog<bool?>(this) != true)
+            {
+                return;
+            }
+        }
+
+        await _viewModel.RestoreRecycleItemsAsync(items, replaceExistingFiles: filesToReplace.Count > 0);
+    }
+
     private async void BrowserBreadcrumb_Click(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: BrowserBreadcrumb breadcrumb })
@@ -468,6 +668,9 @@ public sealed partial class MainWindow : Window
             await CopyPathAsync(result);
         }
     }
+
+    private async void BrowserVersionHistory_Click(object? sender, RoutedEventArgs e) =>
+        await OpenVersionHistoryAsync(_viewModel.SelectedBrowserItemAsResult(), openedFromExplorer: true);
 
     private async Task<bool> CopySelectedItemAsync()
     {
@@ -675,6 +878,10 @@ public sealed partial class MainWindow : Window
             _viewModel.ReloadConnection();
             ApplyWindowBehavior();
             ApplyDetailColumnVisibility();
+            if (_viewModel.IsNavigationVisible && !string.IsNullOrWhiteSpace(_viewModel.BrowserLocation))
+            {
+                await _viewModel.RefreshBrowserCommand.ExecuteAsync();
+            }
             if (settings.ClearHistoryRequested)
             {
                 await _viewModel.ClearCurrentUserHistoryAsync(settings.ClearStarredRequested);
@@ -688,20 +895,27 @@ public sealed partial class MainWindow : Window
 
     private async void Help_Click(object? sender, RoutedEventArgs e)
     {
-        await new HelpWindow().ShowDialog(this);
+        await OpenHelpAsync();
     }
+
+    private Task OpenHelpAsync() => new HelpWindow().ShowDialog(this);
 
     private void ApplyWindowBehavior()
     {
         Topmost = _viewModel.Config.AlwaysOnTop;
         ShowInTaskbar = _viewModel.Config.Behavior.ShowInTaskbar;
+        ThemeColorService.Apply(_viewModel.Config.Behavior.ThemeColors, _viewModel.Config.Behavior.UseWindowsAccentColor);
         Application.Current!.RequestedThemeVariant = _viewModel.Config.Behavior.Theme.ToLowerInvariant() switch
         {
             "light" => ThemeVariant.Light,
             "dark" => ThemeVariant.Dark,
             _ => ThemeVariant.Default,
         };
+        ApplyWindowChrome();
     }
+
+    private void ApplyWindowChrome() =>
+        WindowChromeService.Apply(this, _viewModel.Config.Behavior.ThemeColors);
 
     private async Task RequestNativePreviewAsync(SearchResult result)
     {
@@ -800,6 +1014,10 @@ public sealed partial class MainWindow : Window
         {
             UpdateSidePaneColumns();
         }
+        else if (e.PropertyName == nameof(MainWindowViewModel.IsNavigationVisible))
+        {
+            Dispatcher.UIThread.Post(ApplyResponsiveCommandLayout, DispatcherPriority.Loaded);
+        }
         else if (e.PropertyName == nameof(MainWindowViewModel.SelectedSearchTab))
         {
             Dispatcher.UIThread.Post(UpdateSidePaneColumns, DispatcherPriority.Loaded);
@@ -819,6 +1037,50 @@ public sealed partial class MainWindow : Window
         var columns = grid.ColumnDefinitions;
         SetSidePaneColumns(columns[0], columns[1], _viewModel.IsFavoritesVisible, ref _favoritesPaneWidth);
         SetSidePaneColumns(columns[4], columns[3], _viewModel.IsPreviewVisible, ref _previewPaneWidth);
+    }
+
+    private void ApplyFavoritesNavigationSplit()
+    {
+        var grid = this.FindControl<Grid>("FavoritesNavigationGrid");
+        if (grid?.RowDefinitions.Count != 3)
+        {
+            return;
+        }
+
+        var favoritesWeight = Math.Clamp(_viewModel.Config.Behavior.FavoritesNavigationSplit, 0.2, 0.8);
+        grid.RowDefinitions[0].Height = new GridLength(favoritesWeight, GridUnitType.Star);
+        grid.RowDefinitions[2].Height = new GridLength(1 - favoritesWeight, GridUnitType.Star);
+    }
+
+    private void PersistPaneLayout()
+    {
+        var layout = this.FindControl<Grid>("ResultLayoutGrid");
+        if (layout?.ColumnDefinitions.Count == 5)
+        {
+            var favoritesWidth = layout.ColumnDefinitions[0].ActualWidth;
+            var previewWidth = layout.ColumnDefinitions[4].ActualWidth;
+            if (favoritesWidth >= 160)
+            {
+                _viewModel.Config.Behavior.FavoritesPaneWidth = (int)Math.Round(favoritesWidth);
+            }
+            if (previewWidth >= 220)
+            {
+                _viewModel.Config.Behavior.PreviewPaneWidth = (int)Math.Round(previewWidth);
+            }
+        }
+
+        var split = this.FindControl<Grid>("FavoritesNavigationGrid");
+        if (split?.RowDefinitions.Count == 3)
+        {
+            var favoritesHeight = split.RowDefinitions[0].ActualHeight;
+            var navigationHeight = split.RowDefinitions[2].ActualHeight;
+            if (favoritesHeight > 0 && navigationHeight > 0)
+            {
+                _viewModel.Config.Behavior.FavoritesNavigationSplit = Math.Clamp(favoritesHeight / (favoritesHeight + navigationHeight), 0.2, 0.8);
+            }
+        }
+
+        ConfigStore.Save(_viewModel.Config);
     }
 
     private static void SetSidePaneColumns(ColumnDefinition paneColumn, ColumnDefinition splitterColumn, bool isVisible, ref GridLength savedWidth)
@@ -851,6 +1113,20 @@ public sealed partial class MainWindow : Window
         if (sender is Button { Tag: SearchTabViewModel tab })
         {
             _viewModel.ToggleTabPin(tab);
+        }
+    }
+
+    private async void SaveSearchAs_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: SearchTabViewModel tab } || string.IsNullOrWhiteSpace(tab.Query))
+        {
+            return;
+        }
+
+        var dialog = new TextEntryWindow("Save search", "Name this saved search", "Save", tab.Query);
+        if (await dialog.ShowDialog<bool?>(this) == true)
+        {
+            await _viewModel.SaveSearchAsync(tab, dialog.Value);
         }
     }
 
@@ -1034,7 +1310,7 @@ public sealed partial class MainWindow : Window
             {
                 "open" => isResult || isSavedSearch,
                 "show" => isResult && !node!.Result!.IsFolder,
-                "copy" or "group" => isResult,
+                "copy" or "versions" or "group" => isResult,
                 "remove" => isResult || isSavedSearch,
                 "delete-group" => isGroup,
                 _ => true,
@@ -1078,6 +1354,9 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async void ResultVersionHistory_Click(object? sender, RoutedEventArgs e) =>
+        await OpenVersionHistoryAsync(ContextResult(), openedFromExplorer: false);
+
     private async void ResultFavorite_Click(object? sender, RoutedEventArgs e)
     {
         if (_contextResults.Count > 0)
@@ -1111,6 +1390,35 @@ public sealed partial class MainWindow : Window
         {
             await EditFavoriteGroupsAsync([result]);
         }
+    }
+
+    private async void FavoriteVersionHistory_Click(object? sender, RoutedEventArgs e) =>
+        await OpenVersionHistoryAsync(_viewModel.SelectedFavoriteNode?.Result, openedFromExplorer: false);
+
+    private async void VersionHistory_Click(object? sender, RoutedEventArgs e)
+    {
+        var result = _viewModel.IsNavigationVisible
+            ? _viewModel.SelectedBrowserItemAsResult()
+            : _viewModel.SelectedSearchTab?.SelectedResult ?? _viewModel.SelectedFavoriteNode?.Result;
+        await OpenVersionHistoryAsync(result, openedFromExplorer: _viewModel.IsNavigationVisible);
+    }
+
+    private async Task OpenVersionHistoryAsync(SearchResult? result, bool openedFromExplorer)
+    {
+        if (result == null)
+        {
+            _viewModel.StatusMessage("Select a file or folder to view its earlier versions.");
+            return;
+        }
+
+        var path = _viewModel.ResolveWindowsPath(result);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            _viewModel.StatusMessage("QSurfer could not resolve a Windows path for version history.");
+            return;
+        }
+
+        await new VersionHistoryWindow(path, result.IsFolder, _viewModel.Config, openedFromExplorer).ShowDialog(this);
     }
 
     private async void FavoriteRemove_Click(object? sender, RoutedEventArgs e) => await _viewModel.RemoveFavoriteNodeAsync(_viewModel.SelectedFavoriteNode);

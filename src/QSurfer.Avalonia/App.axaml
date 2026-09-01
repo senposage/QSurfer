@@ -61,6 +61,7 @@
   <Application.Styles>
     <FluentTheme />
     <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+    <StyleInclude Source="avares://Avalonia.Controls.ColorPicker/Themes/Fluent/Fluent.xaml" />
     <Style Selector="Window">
       <Setter Property="Background" Value="{DynamicResource QSurfer.WindowBackground}" />
       <Setter Property="FontSize" Value="13" />
@@ -92,6 +93,27 @@
       <Setter Property="Padding" Value="10" />
       <Setter Property="BoxShadow" Value="0 0 0 0 #00000000" />
       <Setter Property="ClipToBounds" Value="True" />
+    </Style>
+    <Style Selector="Border.color-swatch">
+      <Setter Property="Width" Value="28" />
+      <Setter Property="Height" Value="28" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="BorderBrush" Value="{DynamicResource QSurfer.SurfaceBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ColorPicker.theme-color-picker">
+      <Setter Property="Width" Value="30" />
+      <Setter Property="Height" Value="28" />
+      <Setter Property="IsAlphaEnabled" Value="False" />
+      <Setter Property="IsAlphaVisible" Value="False" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.theme-preview">
+      <Setter Property="Padding" Value="10" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="MinHeight" Value="78" />
     </Style>
     <Style Selector="Border.favorites-pane">
       <Setter Property="BorderBrush" Value="{DynamicResource QSurfer.SurfaceBorder}" />
@@ -322,9 +344,23 @@
       <Setter Property="Margin" Value="0,0,4,0" />
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
     </Style>
     <Style Selector="ListBox.search-tab-list > ListBoxItem:selected">
       <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox.search-tab-list > ListBoxItem:pointerover">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox.search-tab-list > ListBoxItem:selected:pointerover">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox.search-tab-list > ListBoxItem:focus">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="Border.search-tab-item">
       <Setter Property="Background" Value="{DynamicResource QSurfer.SubtleBackground}" />

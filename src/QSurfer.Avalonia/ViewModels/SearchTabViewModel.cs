@@ -9,6 +9,7 @@ namespace QSurfer.Avalonia.ViewModels;
 
 public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
 {
+    private static readonly DateTime EarliestSearchDate = new(1970, 1, 1);
     private readonly Func<SearchTabViewModel, Task> _search;
     private readonly Func<SearchTabViewModel, Task> _loadMore;
     private readonly Func<SearchTabViewModel, Task> _stop;
@@ -167,11 +168,14 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         private set => SetField(ref _workspaceGlyph, value);
     }
 
+    public bool IsBrowsing => _isBrowsing;
+
     public void SetWorkspaceMode(bool browsing)
     {
         if (_isBrowsing != browsing)
         {
             _isBrowsing = browsing;
+            OnPropertyChanged(nameof(IsBrowsing));
             OnPropertyChanged(nameof(Title));
         }
 
@@ -408,6 +412,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     // A blank start with today's end date is the default "everything" state.
     public bool HasDateRange => DateFrom.HasValue || (DateTo.HasValue && DateTo.Value.Date < Today.Date);
     public DateTime Today => DateTime.Today;
+    public DateTime MinimumSearchDate => EarliestSearchDate;
     public string TypeFilterSummary
     {
         get
@@ -581,31 +586,36 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        var filtered = _allResults.Where(MatchesFilters);
-        foreach (var result in Sort(filtered))
-        {
-            if (!Results.Contains(result))
-            {
-                Results.Add(result);
-            }
-        }
+        var ordered = Sort(_allResults.Where(MatchesFilters)).ToList();
+        SynchronizeVisibleResults(ordered);
+        OnPropertyChanged(nameof(TypeFilterSummary));
+    }
+
+    private void SynchronizeVisibleResults(IReadOnlyList<SearchResult> ordered)
+    {
+        // Never clear and repopulate during a paint batch: the view treats that as a new list and resets its scrollbar.
+        var expected = ordered.ToHashSet();
         for (var index = Results.Count - 1; index >= 0; index--)
         {
-            if (!MatchesFilters(Results[index]))
+            if (!expected.Contains(Results[index]))
             {
                 Results.RemoveAt(index);
             }
         }
-        var ordered = Sort(Results).ToList();
-        if (!Results.SequenceEqual(ordered))
+
+        for (var targetIndex = 0; targetIndex < ordered.Count; targetIndex++)
         {
-            Results.Clear();
-            foreach (var result in ordered)
+            var result = ordered[targetIndex];
+            var currentIndex = Results.IndexOf(result);
+            if (currentIndex < 0)
             {
-                Results.Add(result);
+                Results.Insert(targetIndex, result);
+            }
+            else if (currentIndex != targetIndex)
+            {
+                Results.Move(currentIndex, targetIndex);
             }
         }
-        OnPropertyChanged(nameof(TypeFilterSummary));
     }
 
     private bool MatchesFilters(SearchResult result)
@@ -644,8 +654,20 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    private DateTime? NormalizeDate(DateTime? value) =>
-        value is { } date && date.Date > Today.Date ? Today : value;
+    private DateTime? NormalizeDate(DateTime? value)
+    {
+        if (value is not { } date)
+        {
+            return null;
+        }
+
+        if (date.Date < EarliestSearchDate)
+        {
+            return null;
+        }
+
+        return date.Date > Today.Date ? Today : date.Date;
+    }
 
     private static bool MatchesType(SearchResult result, FileTypeFilter filter) =>
         result.IsFolder

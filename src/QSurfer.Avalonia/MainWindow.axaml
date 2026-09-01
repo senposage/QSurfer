@@ -20,6 +20,8 @@
         <StackPanel Orientation="Horizontal" Spacing="2">
           <Button Content="&#xE8E5;" Classes="toolbar-icon command-open" Command="{Binding SelectedSearchTab.OpenCommand}" ToolTip.Tip="Open selected item" />
           <Button Content="&#xE8B7;" Classes="toolbar-icon command-show" Command="{Binding SelectedSearchTab.BrowseCommand}" ToolTip.Tip="Show selected item in File Explorer" />
+          <Button Content="Restore" Classes="toolbar-pane-toggle" IsVisible="{Binding IsRecycleBinView}" Click="RestoreRecycle_Click" ToolTip.Tip="Restore selected Recycle Bin items to their original location" />
+          <Button Content="&#xE81C;" Classes="toolbar-icon command-preview" Click="VersionHistory_Click" ToolTip.Tip="Version history" />
           <Border Width="1" Height="20" Background="{DynamicResource QSurfer.SurfaceBorder}" Margin="5,0" />
           <Button Classes="toolbar-pane-toggle" Command="{Binding TogglePreviewCommand}" ToolTip.Tip="Show or hide preview">
             <StackPanel Orientation="Horizontal" Spacing="6">
@@ -52,10 +54,32 @@
                        Background="Transparent"
                        BorderThickness="0"
                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                       ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                       PointerPressed="SearchTabPointerPressed"
-                       PointerReleased="SearchTabPointerReleased"
-                       SelectionChanged="SearchTabSelectionChanged">
+                       ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                <ListBox.ItemContainerTheme>
+                  <ControlTheme TargetType="ListBoxItem">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="Margin" Value="0,0,4,0" />
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="BorderBrush" Value="Transparent" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="FocusAdorner" Value="{x:Null}" />
+                    <Setter Property="Template">
+                      <ControlTemplate>
+                        <Border Name="PART_Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                          <ContentPresenter Name="PART_ContentPresenter"
+                                            Content="{TemplateBinding Content}"
+                                            ContentTemplate="{TemplateBinding ContentTemplate}"
+                                            Padding="{TemplateBinding Padding}"
+                                            HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                            VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Border>
+                      </ControlTemplate>
+                    </Setter>
+                  </ControlTheme>
+                </ListBox.ItemContainerTheme>
                 <ListBox.ItemsPanel>
                   <ItemsPanelTemplate>
                     <StackPanel Orientation="Horizontal" />
@@ -66,7 +90,8 @@
                     <Border Classes="search-tab-item">
                       <Border.ContextMenu>
                         <ContextMenu>
-                          <MenuItem Header="Save search" Command="{Binding SaveSearchCommand}" />
+                          <MenuItem Header="Quick save search" Command="{Binding SaveSearchCommand}" />
+                          <MenuItem Header="Save search as..." Click="SaveSearchAs_Click" />
                         </ContextMenu>
                       </Border.ContextMenu>
                       <StackPanel Orientation="Horizontal" Spacing="2">
@@ -89,20 +114,21 @@
                 <Grid RowDefinitions="Auto,*" RowSpacing="0">
                   <Border Classes="search-surface">
                     <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
-                      <Grid ColumnDefinitions="*,14,*">
-                        <Grid Grid.Column="0" ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="4">
-                          <Button Grid.Column="0" Content="&#xE72B;" Classes="side-pane-action command-show" Command="{Binding DataContext.NavigateBackCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Back" />
-                          <Button Grid.Column="1" Content="&#xE72A;" Classes="side-pane-action command-show" Command="{Binding DataContext.NavigateForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Forward" />
-                          <Button Grid.Column="2" Content="&#xE74A;" Classes="side-pane-action command-open" Command="{Binding DataContext.NavigateUpCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Up one folder" />
-                          <TextBox Grid.Column="3"
+                      <Grid x:Name="SearchAddressBand" RowDefinitions="Auto,Auto" ColumnDefinitions="*" RowSpacing="8">
+                        <Grid x:Name="AddressControlsGroup" Grid.Row="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*" ColumnSpacing="4">
+                          <Button x:Name="NavigateBackButton" Grid.Column="0" Content="&#xE72B;" Classes="side-pane-action command-show" Command="{Binding DataContext.NavigateBackCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Back" />
+                          <Button x:Name="NavigateForwardButton" Grid.Column="1" Content="&#xE72A;" Classes="side-pane-action command-show" Command="{Binding DataContext.NavigateForwardCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Forward" />
+                          <Button x:Name="NavigateUpButton" Grid.Column="2" Content="&#xE74A;" Classes="side-pane-action command-open" Command="{Binding DataContext.NavigateUpCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Up one folder" />
+                          <TextBlock x:Name="AddressModeLabel" Grid.Column="3" Text="Browse" Classes="field-label" VerticalAlignment="Center" IsVisible="False" />
+                          <TextBox x:Name="AddressTextBox" Grid.Column="4"
                                    Classes="location-box"
                                    Watermark="Address"
                                    Text="{Binding DataContext.BrowserLocation, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
                                    GotFocus="BrowserLocationGotFocus"
                                    KeyDown="BrowserLocationKeyDown" />
                         </Grid>
-                        <Border Grid.Column="1" Classes="address-search-divider" />
-                        <Grid Grid.Column="2" ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="8">
+                        <Border x:Name="AddressSearchDivider" Classes="address-search-divider" IsVisible="False" />
+                        <Grid x:Name="SearchControlsGroup" Grid.Row="1" ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="8">
                           <TextBox Grid.Column="0"
                                    Classes="search-box"
                                    MinWidth="180"
@@ -133,10 +159,15 @@
                           <Button Grid.Column="4" Classes="primary" Content="Search" Command="{Binding SearchCommand}" IsDefault="True" />
                         </Grid>
                       </Grid>
-                      <WrapPanel Grid.Row="1" ItemHeight="28" VerticalAlignment="Center">
-                        <CheckBox Content="Exact match" IsChecked="{Binding ExactMatch}" Margin="0,0,16,0" />
-                        <CheckBox Content="Search contents" IsChecked="{Binding SearchContents}" Margin="0,0,16,0" />
-                        <ToggleButton x:Name="TypeFilterToggle" Content="{Binding TypeFilterSummary}" Width="152" IsChecked="{Binding IsTypeFilterOpen}" ToolTip.Tip="Filter by one or more file types" />
+                      <Grid x:Name="FilterControlsGrid"
+                            Grid.Row="1"
+                            RowDefinitions="Auto,Auto"
+                            ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+                            RowSpacing="8"
+                            ColumnSpacing="8">
+                        <CheckBox x:Name="ExactMatchFilter" Grid.Row="0" Grid.Column="0" Content="Exact match" IsChecked="{Binding ExactMatch}" />
+                        <CheckBox x:Name="SearchContentsFilter" Grid.Row="0" Grid.Column="1" Content="Search contents" IsChecked="{Binding SearchContents}" />
+                        <ToggleButton x:Name="TypeFilterToggle" Grid.Row="0" Grid.Column="2" Content="{Binding TypeFilterSummary}" Width="140" IsChecked="{Binding IsTypeFilterOpen}" ToolTip.Tip="Filter by one or more file types" />
                         <Popup IsOpen="{Binding IsTypeFilterOpen, Mode=TwoWay}"
                                Placement="Bottom"
                                PlacementTarget="{Binding #TypeFilterToggle}"
@@ -161,33 +192,41 @@
                             </StackPanel>
                           </Border>
                         </Popup>
-                        <ComboBox Width="130" ItemsSource="{Binding DatePresets}" SelectedItem="{Binding SelectedDatePreset}" Margin="16,0,0,0" />
-                        <TextBlock Text="From" Classes="field-label" VerticalAlignment="Center" Margin="16,0,6,0" />
-                        <CalendarDatePicker Width="132"
+                        <ComboBox x:Name="DatePresetFilter" Grid.Row="0" Grid.Column="3" Width="116" ItemsSource="{Binding DatePresets}" SelectedItem="{Binding SelectedDatePreset}" />
+                        <TextBlock x:Name="FromFilterLabel" Grid.Row="0" Grid.Column="4" Text="From" Classes="field-label" VerticalAlignment="Center" />
+                        <CalendarDatePicker x:Name="DateFromFilter" Grid.Row="0" Grid.Column="5" Width="116"
                                             SelectedDate="{Binding DateFrom, Mode=TwoWay}"
+                                            DisplayDateStart="{Binding MinimumSearchDate}"
                                             DisplayDateEnd="{Binding Today}"
                                             Watermark="Any date" />
-                        <TextBlock Text="To" Classes="field-label" VerticalAlignment="Center" Margin="10,0,6,0" />
-                        <CalendarDatePicker Width="132"
+                        <TextBlock x:Name="ToFilterLabel" Grid.Row="0" Grid.Column="6" Text="To" Classes="field-label" VerticalAlignment="Center" />
+                        <CalendarDatePicker x:Name="DateToFilter" Grid.Row="0" Grid.Column="7" Width="116"
                                             SelectedDate="{Binding DateTo, Mode=TwoWay}"
+                                            DisplayDateStart="{Binding MinimumSearchDate}"
                                             DisplayDateEnd="{Binding Today}"
                                             Watermark="Today" />
-                        <Button Content="Clear filters" Classes="panel-action" Command="{Binding ClearFiltersCommand}" Margin="10,0,0,0" />
-                        <TextBlock Text="Scope" Classes="field-label" VerticalAlignment="Center" Margin="16,0,6,0" />
-                        <ComboBox Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" />
-                        <TextBlock Text="Arrange" Classes="field-label" VerticalAlignment="Center" Margin="16,0,6,0" />
-                        <ComboBox Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode}" />
-                        <TextBlock Text="View" Classes="field-label" VerticalAlignment="Center" Margin="16,0,8,0" />
-                        <ComboBox Width="130" ItemsSource="{Binding ViewModes}" SelectedItem="{Binding SelectedViewMode}" />
-                        <Button Content="Load more" Classes="panel-action" Command="{Binding LoadMoreCommand}" Margin="10,0,0,0" />
-                      </WrapPanel>
+                        <Button x:Name="ClearFiltersButton" Grid.Row="0" Grid.Column="8" Content="Clear filters" Classes="panel-action" Command="{Binding ClearFiltersCommand}" />
+                        <TextBlock x:Name="ScopeFilterLabel" Grid.Row="1" Grid.Column="0" Text="Scope" Classes="field-label" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ScopeFilter" Grid.Row="1" Grid.Column="1" Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" />
+                        <TextBlock x:Name="ArrangeFilterLabel" Grid.Row="1" Grid.Column="2" Text="Arrange" Classes="field-label" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ArrangeFilter" Grid.Row="1" Grid.Column="3" Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode}" />
+                        <TextBlock x:Name="ViewFilterLabel" Grid.Row="1" Grid.Column="4" Text="View" Classes="field-label" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ViewFilter" Grid.Row="1" Grid.Column="5" Width="130" ItemsSource="{Binding ViewModes}" SelectedItem="{Binding SelectedViewMode}" />
+                        <Button x:Name="LoadMoreButton" Grid.Row="1" Grid.Column="6" Content="Load more" Classes="panel-action" Command="{Binding LoadMoreCommand}" />
+                      </Grid>
                       <ProgressBar Grid.Row="2" Height="3" Minimum="0" Maximum="1" Value="0.6" IsIndeterminate="{Binding IsSearching}" IsVisible="{Binding IsSearching}" />
                     </Grid>
                   </Border>
 
                   <Grid x:Name="ResultLayoutGrid" Grid.Row="1" ColumnDefinitions="238,6,*,6,280">
-                    <Border Grid.Column="0" Classes="side-pane favorites-pane" MinWidth="180" IsVisible="{Binding DataContext.IsFavoritesVisible, RelativeSource={RelativeSource AncestorType=Window}}">
-                      <Grid RowDefinitions="Auto,3*,Auto,6,Auto,2*" RowSpacing="8">
+                    <Border Grid.Column="0" Classes="side-pane favorites-pane" MinWidth="120" IsVisible="{Binding DataContext.IsFavoritesVisible, RelativeSource={RelativeSource AncestorType=Window}}">
+                      <Grid x:Name="FavoritesNavigationGrid" RowSpacing="8">
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="3*" MinHeight="160" />
+                          <RowDefinition Height="6" />
+                          <RowDefinition Height="2*" MinHeight="180" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" MinHeight="140" RowDefinitions="Auto,*,Auto" RowSpacing="8">
                         <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
                           <TextBlock Text="★ Favorites" Classes="panel-title" VerticalAlignment="Center" />
                           <Button Grid.Column="1" Content="&#xE72C;" Classes="side-pane-action" Command="{Binding DataContext.RefreshFavoritesCommand, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Refresh Favorites" />
@@ -211,6 +250,7 @@
                               <MenuItem Header="Open" Tag="open" Click="FavoriteOpen_Click" />
                               <MenuItem Header="Show in File Explorer" Tag="show" Click="FavoriteShow_Click" />
                               <MenuItem Header="Copy full path" Tag="copy" Click="FavoriteCopyPath_Click" />
+                              <MenuItem Header="Version history" Tag="versions" Click="FavoriteVersionHistory_Click" />
                               <MenuItem Header="Add to group" Tag="group" Click="FavoriteAddToGroup_Click" />
                               <Separator Tag="result-separator" />
                               <MenuItem Header="Remove favorite" Tag="remove" Click="FavoriteRemove_Click" />
@@ -224,11 +264,16 @@
                           </TreeView.ItemTemplate>
                         </TreeView>
                         <TextBlock Grid.Row="2" Text="Favorites are personal to this Windows user." Classes="field-label" TextWrapping="Wrap" />
-                        <GridSplitter Grid.Row="3" Height="6" Classes="side-pane-divider" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" HorizontalAlignment="Stretch" />
-                        <Grid Grid.Row="4">
-                          <TextBlock Text="Folders" Classes="panel-title" VerticalAlignment="Center" />
                         </Grid>
-                        <TreeView Grid.Row="5"
+                        <GridSplitter Grid.Row="1" Height="6" Classes="side-pane-divider" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" HorizontalAlignment="Stretch" />
+                        <Grid Grid.Row="2" MinHeight="160" RowDefinitions="Auto,Auto,*" RowSpacing="8">
+                          <TextBlock Text="Navigation" Classes="panel-title" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="1"
+                                     Text="{Binding DataContext.NasNavigationStatus, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     Classes="field-label"
+                                     TextWrapping="Wrap"
+                                     IsVisible="{Binding DataContext.ShowNasNavigationStatus, RelativeSource={RelativeSource AncestorType=Window}}" />
+                          <TreeView Grid.Row="2"
                                   ItemsSource="{Binding DataContext.NavigationRoots, RelativeSource={RelativeSource AncestorType=Window}}"
                                   PointerReleased="NavigationTreePointerReleased">
                           <TreeView.Styles>
@@ -239,12 +284,16 @@
                           <TreeView.ItemTemplate>
                             <TreeDataTemplate ItemsSource="{Binding Children}">
                               <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding !IsPlaceholder}">
-                                <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="14" VerticalAlignment="Center" />
+                                <Grid Width="18" Height="18">
+                                  <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                  <Image Source="{Binding IconSource}" Width="18" Height="18" Stretch="Uniform" />
+                                </Grid>
                                 <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip.Tip="{Binding FullPath}" />
                               </StackPanel>
                             </TreeDataTemplate>
                           </TreeView.ItemTemplate>
                         </TreeView>
+                        </Grid>
                       </Grid>
                     </Border>
 
@@ -269,6 +318,7 @@
                         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
                           <Button Content="&#xE8E5;" Classes="side-pane-action command-open" Command="{Binding OpenCommand}" ToolTip.Tip="Open selected item" />
                           <Button Content="&#xE8B7;" Classes="side-pane-action command-show" Command="{Binding BrowseCommand}" ToolTip.Tip="Show selected item in File Explorer" />
+                          <Button Content="&#xE81C;" Classes="side-pane-action command-preview" Click="VersionHistory_Click" ToolTip.Tip="Version history" />
                         </StackPanel>
                       </Grid>
                     </Border>
@@ -297,6 +347,7 @@
                                 <MenuItem Header="Show in File Explorer" Tag="show" Click="ResultShow_Click" />
                                 <MenuItem Header="Copy full path" Tag="copy" Click="ResultCopyPath_Click" />
                                 <MenuItem Header="Properties" Tag="properties" Click="ResultProperties_Click" />
+                                <MenuItem Header="Version history" Tag="versions" Click="ResultVersionHistory_Click" />
                                 <Separator />
                                 <MenuItem Header="Add or remove Favorite" Tag="favorite" Click="ResultFavorite_Click" />
                                 <MenuItem Header="Add to group" Tag="group" Click="ResultAddToGroup_Click" />
@@ -451,22 +502,27 @@
                                   <MenuItem Header="Create shortcut" Tag="shortcut" Click="BrowserShortcut_Click" />
                                   <MenuItem Header="Copy full path" Tag="copy-path" Click="BrowserCopyPath_Click" />
                                   <MenuItem Header="Properties" Tag="properties" Click="BrowserProperties_Click" />
+                                  <MenuItem Header="Version history" Tag="versions" Click="BrowserVersionHistory_Click" />
                                   <Separator />
                                   <MenuItem Header="Add or remove Favorite" Click="BrowserFavorite_Click" />
                                 </ContextMenu>
                               </DataGrid.ContextMenu>
                               <DataGrid.Columns>
-                                <DataGridTemplateColumn Header="Name" Width="2*">
+                                <DataGridTemplateColumn Header="Name" Width="1.4*">
                                   <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                       <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <TextBlock Text="{Binding Glyph}" Classes="file-glyph" VerticalAlignment="Center" />
-                                        <TextBlock Text="{Binding Name}" Classes="result-name" VerticalAlignment="Center" />
+                                         <Grid Width="22" Height="22">
+                                           <TextBlock Text="{Binding Glyph}" Classes="file-glyph" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                           <Image Source="{Binding IconSource}" Width="22" Height="22" Stretch="Uniform" />
+                                         </Grid>
+                                         <TextBlock Text="{Binding Name}" Classes="result-name" VerticalAlignment="Center" />
                                       </StackPanel>
                                     </DataTemplate>
                                   </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>
-                                <DataGridTextColumn Header="Date modified" Binding="{Binding Modified}" Width="160" />
+                                <DataGridTextColumn Header="Location" Binding="{Binding DisplayPath}" Width="2*" />
+                                <DataGridTextColumn Header="Date" Binding="{Binding DisplayDate}" Width="160" />
                                 <DataGridTextColumn Header="Type" Binding="{Binding Kind}" Width="140" />
                                 <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="95" />
                               </DataGrid.Columns>
@@ -496,18 +552,23 @@
                                   <MenuItem Header="Create shortcut" Tag="shortcut" Click="BrowserShortcut_Click" />
                                   <MenuItem Header="Copy full path" Tag="copy-path" Click="BrowserCopyPath_Click" />
                                   <MenuItem Header="Properties" Tag="properties" Click="BrowserProperties_Click" />
+                                  <MenuItem Header="Version history" Tag="versions" Click="BrowserVersionHistory_Click" />
                                   <Separator />
                                   <MenuItem Header="Add or remove Favorite" Click="BrowserFavorite_Click" />
                                 </ContextMenu>
                               </ListBox.ContextMenu>
                               <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                  <Grid ColumnDefinitions="Auto,2*,*,120,90" ColumnSpacing="10" Margin="10,5">
-                                    <TextBlock Grid.Column="0" Text="{Binding Glyph}" Classes="file-glyph" VerticalAlignment="Center" />
-                                    <TextBlock Grid.Column="1" Text="{Binding Name}" Classes="result-name" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="2" Text="{Binding Kind}" Classes="field-label" VerticalAlignment="Center" />
-                                    <TextBlock Grid.Column="3" Text="{Binding Modified}" Classes="field-label" VerticalAlignment="Center" />
-                                    <TextBlock Grid.Column="4" Text="{Binding SizeText}" Classes="field-label" VerticalAlignment="Center" TextAlignment="Right" />
+                                  <Grid ColumnDefinitions="Auto,1.2*,2*,*,120,90" ColumnSpacing="10" Margin="10,5">
+                                     <Grid Grid.Column="0" Width="22" Height="22">
+                                       <TextBlock Text="{Binding Glyph}" Classes="file-glyph" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                       <Image Source="{Binding IconSource}" Width="22" Height="22" Stretch="Uniform" />
+                                     </Grid>
+                                     <TextBlock Grid.Column="1" Text="{Binding Name}" Classes="result-name" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="2" Text="{Binding DisplayPath}" Classes="field-label" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="3" Text="{Binding Kind}" Classes="field-label" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="4" Text="{Binding DisplayDate}" Classes="field-label" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="5" Text="{Binding SizeText}" Classes="field-label" VerticalAlignment="Center" TextAlignment="Right" />
                                   </Grid>
                                 </DataTemplate>
                               </ListBox.ItemTemplate>
@@ -529,8 +590,11 @@
                                 <DataTemplate>
                                   <Border Classes="result-icon-tile" Width="132" Height="120" Margin="6">
                                     <StackPanel HorizontalAlignment="Center" Spacing="5">
-                                      <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="42" HorizontalAlignment="Center" />
-                                      <TextBlock Text="{Binding Name}" Classes="result-name" MaxWidth="116" TextAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
+                                       <Grid Width="42" Height="42" HorizontalAlignment="Center">
+                                         <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="42" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                         <Image Source="{Binding IconSource}" Width="42" Height="42" Stretch="Uniform" />
+                                       </Grid>
+                                       <TextBlock Text="{Binding Name}" Classes="result-name" MaxWidth="116" TextAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
                                     </StackPanel>
                                   </Border>
                                 </DataTemplate>
@@ -553,8 +617,11 @@
                                 <DataTemplate>
                                   <Border Classes="result-icon-tile" Width="210" Height="180" Margin="7">
                                     <StackPanel HorizontalAlignment="Center" Spacing="8">
-                                      <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="58" HorizontalAlignment="Center" />
-                                      <TextBlock Text="{Binding Name}" Classes="result-name" MaxWidth="188" TextAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
+                                       <Grid Width="64" Height="64" HorizontalAlignment="Center">
+                                         <TextBlock Text="{Binding Glyph}" Classes="file-glyph" FontSize="58" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                         <Image Source="{Binding IconSource}" Width="64" Height="64" Stretch="Uniform" />
+                                       </Grid>
+                                       <TextBlock Text="{Binding Name}" Classes="result-name" MaxWidth="188" TextAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
                                       <TextBlock Text="{Binding Kind}" Classes="result-path" MaxWidth="188" TextAlignment="Center" TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
                                   </Border>
@@ -573,7 +640,11 @@
       </Grid>
 
     <Border Grid.Row="3" Classes="statusbar">
-      <TextBlock Text="{Binding Status}" Foreground="{DynamicResource QSurfer.MutedForeground}" />
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="18">
+        <TextBlock Text="{Binding Status}" Foreground="{DynamicResource QSurfer.MutedForeground}" />
+        <TextBlock Grid.Column="1" Text="{Binding CurrentWindowsUser}" Foreground="{DynamicResource QSurfer.MutedForeground}" TextTrimming="CharacterEllipsis" />
+        <TextBlock Grid.Column="2" Text="{Binding NasConnectionStatus}" Foreground="{DynamicResource QSurfer.MutedForeground}" TextTrimming="CharacterEllipsis" />
+      </Grid>
     </Border>
   </Grid>
 </Window>

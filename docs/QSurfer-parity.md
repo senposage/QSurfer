@@ -26,14 +26,13 @@ The retired WPF application remains the behavioral reference. This is the curren
 
 - Saved searches, favorites, nested favorite groups, group deletion, batch favorite operations, and private per-user SQLite data are available.
 - The preview pane is resizable, collapses cleanly, and uses installed Windows preview handlers when possible. Video remains intentionally unsupported.
-- The integrated browser opens direct UNC paths and mapped drives, preserves search results while browsing, and offers Back, Forward, Up, Refresh, a folder tree, typed locations, and clickable breadcrumbs.
+- The integrated browser opens direct UNC paths and mapped drives, preserves search results while browsing, and offers per-tab locations and Back/Forward history, Up, Refresh, a folder tree, typed locations, and clickable breadcrumbs.
 - Browser rows support multi-select and folder-first ordering. Right-click actions include Open, Cut, Copy, Paste, Rename, Delete, New folder, Create shortcut, Copy full path, Properties, and Favorite.
 - Copy places real file and folder objects on the Windows clipboard; QSurfer can also paste file and folder selections from Windows.
 - Delete uses the standard shell path so NAS-side recycle-folder behavior is preserved when configured by the share.
 
 ## Still To Improve
 
-- Browser location and history are currently shared by the active workspace rather than being independently retained for every search tab.
 - Large copy, move, and delete operations run off the UI thread, but they do not yet have an Explorer-style progress queue, conflict dialog, or cancellation surface.
 - Cut state is complete inside QSurfer. Advertising a cut operation to other Windows applications needs the native shell preferred-drop-effect format before it can claim full cross-app Cut parity.
 - Drag-and-drop between the browser, local folders, and Explorer is not yet implemented.

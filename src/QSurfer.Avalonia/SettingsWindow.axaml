@@ -3,15 +3,16 @@
         x:Class="QSurfer.Avalonia.SettingsWindow"
         x:Name="SettingsRoot"
         Title="QSurfer settings"
-        Width="940"
-        Height="620"
-        MinWidth="760"
-        MinHeight="500"
+        Width="1080"
+        Height="820"
+        MinWidth="860"
+        MinHeight="640"
         WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel Spacing="4">
       <TextBlock Text="QSurfer settings" FontSize="20" FontWeight="SemiBold" />
       <TextBlock Text="Settings are kept for this computer. Shared connection defaults remain available for new workstations." Opacity="0.68" TextWrapping="Wrap" />
+      <TextBlock x:Name="WindowsIdentityText" Classes="field-label" TextWrapping="Wrap" Margin="0,4,0,0" />
     </StackPanel>
 
     <TabControl Grid.Row="1" Margin="0,22,0,18">
@@ -40,25 +41,20 @@
 
       <TabItem Header="Behavior">
         <ScrollViewer Margin="12">
-          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="28">
+          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="28">
             <CheckBox Grid.Row="0" x:Name="ShowInTaskbarBox" Content="Show QSurfer in the taskbar" />
             <CheckBox Grid.Row="0" Grid.Column="1" x:Name="MinimizeToTrayBox" Content="Minimize to the notification area" />
             <CheckBox Grid.Row="1" x:Name="ExitToTrayBox" Content="Keep QSurfer in the notification area when closing" />
             <CheckBox Grid.Row="1" Grid.Column="1" x:Name="ClearResultsWithQueryBox" Content="Clear results when the search text is cleared" />
             <CheckBox Grid.Row="2" x:Name="AlwaysOnTopBox" Content="Always on top" />
-            <CheckBox Grid.Row="2" Grid.Column="1" x:Name="FoldersFirstBox" Content="Show folders before files" />
-            <CheckBox Grid.Row="3" x:Name="DefaultSearchContentsBox" Content="Search file contents by default" />
-            <CheckBox Grid.Row="3" Grid.Column="1" x:Name="HighlightMatchesBox" Content="Highlight matching text" />
-            <CheckBox Grid.Row="4" x:Name="PreviewPaneBox" Content="Show preview pane by default" />
-            <CheckBox Grid.Row="4" Grid.Column="1" x:Name="ShowInternalPathsBox" Content="Show Qsirch internal paths" />
-            <CheckBox Grid.Row="5" x:Name="UseThumbnailsBox" Content="Use Qsirch thumbnails when available" />
-            <CheckBox Grid.Row="5" Grid.Column="1" x:Name="AllowDownloadBox" Content="Show Download when available" />
-            <TextBlock Grid.Row="6" Text="Theme" VerticalAlignment="Center" />
-            <ComboBox Grid.Row="6" Grid.Column="1" x:Name="ThemeBox" SelectedIndex="0">
-              <ComboBoxItem Content="Follow Windows" Tag="system" />
-              <ComboBoxItem Content="Light" Tag="light" />
-              <ComboBoxItem Content="Dark" Tag="dark" />
-            </ComboBox>
+            <CheckBox Grid.Row="2" Grid.Column="1" x:Name="DefaultSearchContentsBox" Content="Search file contents by default" />
+            <CheckBox Grid.Row="3" x:Name="HighlightMatchesBox" Content="Highlight matching text" />
+            <CheckBox Grid.Row="3" Grid.Column="1" x:Name="PreviewPaneBox" Content="Show preview pane by default" />
+            <CheckBox Grid.Row="4" x:Name="UseThumbnailsBox" Content="Use Qsirch thumbnails when available" />
+            <CheckBox Grid.Row="4" Grid.Column="1" x:Name="ShowRecoverySystemFoldersBox" Content="Show raw QNAP recovery system folders" ToolTip.Tip="Shows @Recently-Snapshot and @Recycle in regular search and folder views" />
+            <CheckBox Grid.Row="5" x:Name="ShowQSurferSafetyCopiesBox" Content="Show QSurfer safety copies" ToolTip.Tip="Shows hidden .qsurfer and @qsurfer backup copies" />
+            <CheckBox Grid.Row="5" Grid.Column="1" x:Name="ShowHiddenTemporaryFilesBox" Content="Show hidden and temporary files" ToolTip.Tip="Shows files beginning with ~ or ~$" />
+            <CheckBox Grid.Row="6" x:Name="FlattenRecycleBinBox" Content="Flatten Recycle Bin" ToolTip.Tip="Shows deleted files from all Recycle Bin folders together, newest first" />
             <TextBlock Grid.Row="7" Text="Search result limit" VerticalAlignment="Center" />
             <TextBox Grid.Row="7" Grid.Column="1" x:Name="ResultLimitBox" Watermark="500" />
             <TextBlock Grid.Row="8" Text="Default view" VerticalAlignment="Center" />
@@ -84,7 +80,155 @@
             <TextBox Grid.Row="11" Grid.Column="1" x:Name="FirstPageSizeBox" Watermark="15" />
             <TextBlock Grid.Row="12" Text="Additional results" VerticalAlignment="Center" />
             <TextBox Grid.Row="12" Grid.Column="1" x:Name="NextPageSizeBox" Watermark="100" />
+            <TextBlock Grid.Row="13" Text="Restore original location" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="13" Grid.Column="1" x:Name="OriginalRestorePolicyBox">
+              <ComboBoxItem Content="Disabled" Tag="disabled" />
+              <ComboBoxItem Content="Files only" Tag="files" />
+            </ComboBox>
+            <TextBlock Grid.Row="14" Text="Folder restore override" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="14" Grid.Column="1" x:Name="OneTimeFolderRestoreBox" ToolTip.Tip="Allows only the next folder restore from Explorer">
+              <ComboBoxItem Content="Blocked" Tag="blocked" />
+              <ComboBoxItem Content="Allow one folder restore (this session)" Tag="one_time" />
+            </ComboBox>
+            <TextBlock Grid.Row="15" Grid.ColumnSpan="2" Text="This replaces every file and folder beneath the selected folder with its snapshot copy. Type I understand below before arming it. The override clears after one successful folder restore or when QSurfer closes." Classes="field-label" TextWrapping="Wrap" />
+            <TextBox Grid.Row="16" Grid.ColumnSpan="2" x:Name="OneTimeFolderRestoreAcknowledgementBox" Watermark="Type I understand to arm the one-time folder restore" />
           </Grid>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Appearance">
+        <ScrollViewer Margin="12">
+          <StackPanel Spacing="16">
+            <TextBlock Text="Tune the colors QSurfer uses in light and dark mode. Selected-row text automatically stays readable against the color you choose." Classes="field-label" TextWrapping="Wrap" />
+            <Grid ColumnDefinitions="Auto,220" ColumnSpacing="10">
+              <TextBlock Text="Display mode" VerticalAlignment="Center" />
+              <ComboBox Grid.Column="1" x:Name="ThemeBox">
+                <ComboBoxItem Content="Follow Windows" Tag="system" />
+                <ComboBoxItem Content="Light" Tag="light" />
+                <ComboBoxItem Content="Dark" Tag="dark" />
+              </ComboBox>
+            </Grid>
+            <StackPanel Spacing="4">
+              <CheckBox x:Name="UseWindowsAccentColorBox" Content="Use the current Windows accent color" Checked="UseWindowsAccentColorChanged" Unchecked="UseWindowsAccentColorChanged" />
+              <TextBlock Text="This changes buttons, links, and focus outlines. Your custom light and dark accents remain saved for when this option is off." Classes="field-label" TextWrapping="Wrap" />
+            </StackPanel>
+            <Grid ColumnDefinitions="Auto,220,Auto" ColumnSpacing="10">
+              <TextBlock Text="Color preset" VerticalAlignment="Center" />
+              <ComboBox Grid.Column="1" x:Name="ThemePresetBox" SelectionChanged="ThemePresetChanged">
+                <ComboBoxItem Content="Custom" Tag="custom" />
+                <ComboBoxItem Content="Windows" Tag="windows" />
+                <ComboBoxItem Content="Explorer light" Tag="explorer-light" />
+                <ComboBoxItem Content="Explorer dark" Tag="explorer-dark" />
+                <ComboBoxItem Content="High contrast" Tag="high-contrast" />
+              </ComboBox>
+              <Button Grid.Column="2" Content="Reset all colors" Click="ResetAllColors_Click" />
+            </Grid>
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+              <Border x:Name="LightPreviewSurface" Classes="theme-preview">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Light preview" Classes="panel-title" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock x:Name="LightPreviewFolderGlyph" Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
+                    <Border x:Name="LightPreviewSelection" Padding="8,4"><TextBlock x:Name="LightPreviewSelectionText" Text="Selected result" /></Border>
+                    <Border x:Name="LightPreviewHover" Padding="8,4"><TextBlock Text="Hovered item" /></Border>
+                    <Border x:Name="LightPreviewMatch" Padding="8,4"><TextBlock Text="Match" /></Border>
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+              <Border Grid.Column="1" x:Name="DarkPreviewSurface" Classes="theme-preview">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="Dark preview" Classes="panel-title" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock x:Name="DarkPreviewFolderGlyph" Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
+                    <Border x:Name="DarkPreviewSelection" Padding="8,4"><TextBlock x:Name="DarkPreviewSelectionText" Text="Selected result" /></Border>
+                    <Border x:Name="DarkPreviewHover" Padding="8,4"><TextBlock Text="Hovered item" /></Border>
+                    <Border x:Name="DarkPreviewMatch" Padding="8,4"><TextBlock Text="Match" /></Border>
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </Grid>
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="30">
+              <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
+                <TextBlock Text="Light mode" Classes="panel-title" />
+                <Grid Grid.Row="1" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Main surface" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="LightSurfacePicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="LightSurfaceSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="LightSurfaceColorBox" Watermark="#FFFFFFFF" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="2" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Accent" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="LightAccentPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="LightAccentSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="LightAccentColorBox" Watermark="#FF0067B8" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="3" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Selected result" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="LightSelectionPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="LightSelectionSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="LightSelectionColorBox" Watermark="#FFD7EBFF" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="4" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Hover" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="LightHoverPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="LightHoverSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="LightHoverColorBox" Watermark="#FFE8F3FD" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="5" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Match highlight" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="LightMatchPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="LightMatchSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="LightMatchColorBox" Watermark="#FFFFE29A" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Button Grid.Row="6" Content="Reset light colors" Click="ResetLightColors_Click" HorizontalAlignment="Left" Margin="0,6,0,0" />
+              </Grid>
+
+              <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
+                <TextBlock Text="Dark mode" Classes="panel-title" />
+                <Grid Grid.Row="1" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Main surface" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="DarkSurfacePicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="DarkSurfaceSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="DarkSurfaceColorBox" Watermark="#FF242830" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="2" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Accent" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="DarkAccentPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="DarkAccentSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="DarkAccentColorBox" Watermark="#FF36B9AD" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="3" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Selected result" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="DarkSelectionPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="DarkSelectionSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="DarkSelectionColorBox" Watermark="#FF27495F" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="4" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Hover" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="DarkHoverPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="DarkHoverSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="DarkHoverColorBox" Watermark="#FF2C3847" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Grid Grid.Row="5" ColumnDefinitions="120,30,*" ColumnSpacing="10">
+                  <TextBlock Text="Match highlight" VerticalAlignment="Center" />
+                  <ColorPicker Grid.Column="1" x:Name="DarkMatchPicker" Classes="theme-color-picker" ColorChanged="ThemePickerColorChanged">
+                    <Border x:Name="DarkMatchSwatch" Classes="color-swatch" />
+                  </ColorPicker>
+                  <TextBox Grid.Column="2" x:Name="DarkMatchColorBox" Watermark="#FF725826" TextChanged="ThemeColorTextChanged" />
+                </Grid>
+                <Button Grid.Row="6" Content="Reset dark colors" Click="ResetDarkColors_Click" HorizontalAlignment="Left" Margin="0,6,0,0" />
+              </Grid>
+            </Grid>
+          </StackPanel>
         </ScrollViewer>
       </TabItem>
 
@@ -94,9 +238,24 @@
             <Button Content="Remove selected" Click="RemoveMapping_Click" />
             <Button Content="Add mapping" Classes="primary" Click="AddMapping_Click" />
           </StackPanel>
-          <Grid RowDefinitions="Auto,*" RowSpacing="8">
-            <TextBlock Text="Map the share path Qsirch reports to the Windows path people use. QSurfer prefers a mapped drive and falls back to a UNC path." Classes="field-label" TextWrapping="Wrap" />
-            <DataGrid Grid.Row="1" x:Name="MappingsGrid" AutoGenerateColumns="False">
+          <Grid RowDefinitions="Auto,Auto,160,Auto,*" RowSpacing="8">
+            <TextBlock Text="Detected Windows network drives are used automatically and are never saved as manual rules. Add a manual mapping only when Qsirch's share path needs a different Windows path." Classes="field-label" TextWrapping="Wrap" />
+            <Grid Grid.Row="1" ColumnDefinitions="Auto,110,*,Auto,Auto" ColumnSpacing="8">
+              <TextBlock Text="Map network drive" Classes="panel-title" VerticalAlignment="Center" />
+              <TextBox Grid.Column="1" x:Name="MapDriveBox" Watermark="X:" MaxLength="2" />
+              <TextBox Grid.Column="2" x:Name="MapNetworkPathBox" Watermark="\\server\share" />
+              <CheckBox Grid.Column="3" x:Name="MapReconnectBox" Content="Reconnect at sign-in" IsChecked="True" VerticalAlignment="Center" />
+              <Button Grid.Column="4" Content="Map drive" Classes="primary" Click="MapNetworkDrive_Click" />
+            </Grid>
+            <DataGrid Grid.Row="2" x:Name="DetectedMappingsGrid" ItemsSource="{Binding DetectedMappings}" AutoGenerateColumns="False" IsReadOnly="True">
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="Drive" Binding="{Binding DriveRoot}" Width="100" />
+                <DataGridTextColumn Header="Network location" Binding="{Binding NetworkPath}" Width="*" />
+                <DataGridTextColumn Header="Qsirch share" Binding="{Binding QsirchShareRoot}" Width="170" />
+              </DataGrid.Columns>
+            </DataGrid>
+            <TextBlock Grid.Row="3" Text="Manual Qsirch-to-Windows mappings" Classes="panel-title" />
+            <DataGrid Grid.Row="4" x:Name="MappingsGrid" ItemsSource="{Binding Mappings}" AutoGenerateColumns="False">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Qsirch share path" Binding="{Binding ShareRoot}" Width="*" />
                 <DataGridTextColumn Header="Windows path" Binding="{Binding MappedRoot}" Width="*" />

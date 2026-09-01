@@ -14,11 +14,16 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
     private const int MaxThumbnailBytes = 4 * 1024 * 1024;
     private readonly HttpClient _http = CreateHttpClient(config);
     private readonly SemaphoreSlim _loginGate = new(1, 1);
+    private readonly SemaphoreSlim _directorySearchGate = new(1, 1);
     private readonly QsirchSessionStore _sessionStore = new(config);
     private readonly string _baseUrl = $"{(config.Ssl ? "https" : "http")}://{config.Host}:{config.Port}";
     private bool _loggedIn;
     private string _sid = "";
     private DateTimeOffset _nextLoginAttemptUtc;
+    private string _lastLoginFailure = "";
+    private int _sessionGeneration;
+
+    public Task EnsureAuthenticatedAsync(CancellationToken cancellationToken) => LoginAsync(cancellationToken);
 
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(string query, FileTypeFilter typeFilter, CancellationToken cancellationToken)
     {
@@ -104,6 +109,21 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
             throw new InvalidOperationException("Configure the NAS connection in config.json first.");
         }
 
+        // Qsirch can leave directory searches running for a long time after a client disconnects.
+        // Keep only one request in flight so stale tabs cannot pile up server-side work.
+        await _directorySearchGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await SearchDirectoriesCoreAsync(query, limit, cancellationToken);
+        }
+        finally
+        {
+            _directorySearchGate.Release();
+        }
+    }
+
+    private async Task<IReadOnlyList<SearchResult>> SearchDirectoriesCoreAsync(string query, int limit, CancellationToken cancellationToken)
+    {
         var stopwatch = Stopwatch.StartNew();
         limit = Math.Clamp(limit, 1, 100);
         var url = $"{_baseUrl}/qsirch/latest/api/search-dirs?q={Uri.EscapeDataString(query)}&limit={limit}";
@@ -269,6 +289,13 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
                 }
                 parseIndex++;
             }
+
+            // Keep streaming searches bounded: completed result objects no longer need to stay in memory.
+            if (depth == 0 && objectStart < 0 && parseIndex > 64 * 1024)
+            {
+                buffer.RemoveRange(0, parseIndex);
+                parseIndex = 0;
+            }
         }
 
         if (!itemsStarted)
@@ -379,9 +406,9 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         return buffer.ToArray();
     }
 
-    private async Task LoginAsync(CancellationToken cancellationToken)
+    private async Task LoginAsync(CancellationToken cancellationToken, int? rejectedSessionGeneration = null)
     {
-        if (_loggedIn)
+        if (HasUsableSession(rejectedSessionGeneration))
         {
             return;
         }
@@ -389,7 +416,7 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         await _loginGate.WaitAsync(cancellationToken);
         try
         {
-            if (_loggedIn)
+            if (HasUsableSession(rejectedSessionGeneration))
             {
                 return;
             }
@@ -403,7 +430,10 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
             if (DateTimeOffset.UtcNow < _nextLoginAttemptUtc)
             {
                 var remaining = Math.Ceiling((_nextLoginAttemptUtc - DateTimeOffset.UtcNow).TotalSeconds);
-                throw new InvalidOperationException($"Qsirch session is unavailable. Waiting {remaining:n0} seconds before another sign-in attempt.");
+                var message = string.IsNullOrWhiteSpace(_lastLoginFailure)
+                    ? "QNAP sign-in is temporarily paused."
+                    : _lastLoginFailure;
+                throw new InvalidOperationException($"{message} Try again in {remaining:n0} seconds.");
             }
 
             var stopwatch = Stopwatch.StartNew();
@@ -421,7 +451,12 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
             var xml = XDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             if (xml.Root?.Element("authPassed")?.Value != "1")
             {
-                throw new InvalidOperationException("QNAP authentication failed.");
+                var errorValue = xml.Root?.Element("errorValue")?.Value?.Trim() ?? "unknown";
+                _sessionStore.Clear();
+                _nextLoginAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(10);
+                _lastLoginFailure = "QNAP rejected the saved NAS username or password. Open Settings and update the connection.";
+                AppLogger.Warn("qsirch", $"login rejected by QNAP errorValue=\"{errorValue}\"; pausing retries for 10s");
+                throw new InvalidOperationException(_lastLoginFailure);
             }
             var sessionId = xml.Root?.Element("authSid")?.Value ?? "";
             if (string.IsNullOrWhiteSpace(sessionId))
@@ -429,8 +464,10 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
                 throw new InvalidOperationException("QNAP did not return an authSid.");
             }
             ApplySession(sessionId);
+            Interlocked.Increment(ref _sessionGeneration);
             _sessionStore.Save(sessionId);
             _nextLoginAttemptUtc = DateTimeOffset.MinValue;
+            _lastLoginFailure = "";
             AppLogger.Info("qsirch", $"login success elapsed={stopwatch.ElapsedMilliseconds}ms");
         }
         finally
@@ -499,10 +536,12 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         CancellationToken cancellationToken,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
     {
+        int? rejectedSessionGeneration = null;
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            await LoginAsync(cancellationToken);
+            await LoginAsync(cancellationToken, rejectedSessionGeneration);
             var sessionId = _sid;
+            var sessionGeneration = Volatile.Read(ref _sessionGeneration);
             using var request = requestFactory();
             var response = await SendWithTimeoutLoggingAsync(request, operation, stopwatch, cancellationToken, completionOption);
             if (response.StatusCode != HttpStatusCode.Unauthorized)
@@ -511,24 +550,26 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
             }
 
             response.Dispose();
-            InvalidateSession(sessionId);
+            InvalidateSession(sessionId, sessionGeneration);
+            rejectedSessionGeneration = sessionGeneration;
             if (attempt == 0)
             {
                 AppLogger.Warn("qsirch", $"{operation} response status=401; session rejected, signing in once and retrying");
                 continue;
             }
 
-            _nextLoginAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(45);
-            AppLogger.Warn("qsirch", $"{operation} response status=401 after a fresh sign-in; pausing retries for 45s to prevent a login loop");
+            _nextLoginAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(10);
+            AppLogger.Warn("qsirch", $"{operation} response status=401 after a fresh sign-in; pausing retries for 10s to prevent a login loop");
             throw new InvalidOperationException("Qsirch rejected the refreshed session. Search retries are paused briefly to prevent repeated sign-ins.");
         }
 
         throw new InvalidOperationException("Unable to recover the Qsirch session.");
     }
 
-    private void InvalidateSession(string expiredSessionId)
+    private void InvalidateSession(string expiredSessionId, int expiredSessionGeneration)
     {
-        if (!_sid.Equals(expiredSessionId, StringComparison.Ordinal))
+        if (Volatile.Read(ref _sessionGeneration) != expiredSessionGeneration ||
+            !_sid.Equals(expiredSessionId, StringComparison.Ordinal))
         {
             return;
         }
@@ -537,6 +578,13 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         _sid = "";
         _http.DefaultRequestHeaders.Remove("Cookie");
         _sessionStore.Clear();
+    }
+
+    private bool HasUsableSession(int? rejectedSessionGeneration)
+    {
+        return _loggedIn &&
+               (!rejectedSessionGeneration.HasValue ||
+                Volatile.Read(ref _sessionGeneration) != rejectedSessionGeneration.Value);
     }
 
     private void ResumeLocalSession()
@@ -674,6 +722,7 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
 
     public void Dispose()
     {
+        _directorySearchGate.Dispose();
         _loginGate.Dispose();
         _http.Dispose();
     }

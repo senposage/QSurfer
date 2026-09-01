@@ -21,7 +21,13 @@ public sealed class HistoryStore
             ? Path.Combine(ConfigStore.PortableRoot, "data", "cache")
             : Path.Combine(localData, "QSurfer", "cache");
         var path = Path.Combine(directory, $"{Environment.MachineName.ToUpperInvariant()}.history.sqlite");
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate }.ToString();
+        _connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+            DefaultTimeout = 5,
+        }.ToString();
     }
 
     public IReadOnlyList<SearchResult> Favorites(string group = "")
@@ -459,6 +465,11 @@ public sealed class HistoryStore
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ConfigStore.PortableRoot);
         var connection = new SqliteConnection(_connectionString);
         connection.Open();
+        using (var busyTimeout = connection.CreateCommand())
+        {
+            busyTimeout.CommandText = "PRAGMA busy_timeout = 5000;";
+            busyTimeout.ExecuteNonQuery();
+        }
         if (_initialized)
         {
             return connection;

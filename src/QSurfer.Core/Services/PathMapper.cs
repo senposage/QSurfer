@@ -22,7 +22,7 @@ public sealed class PathMapper(AppConfig config)
         {
             qpath = qpath.TrimEnd('\\') + "\\" + fileName;
         }
-        foreach (var mapping in config.PathMappings)
+        foreach (var mapping in OrderedPathMappings())
         {
             var target = Normalize(mapping.MappedRoot).TrimEnd('\\');
             var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
@@ -104,7 +104,7 @@ public sealed class PathMapper(AppConfig config)
             return normalized;
         }
 
-        foreach (var mapping in config.PathMappings)
+        foreach (var mapping in OrderedPathMappings())
         {
             var target = Normalize(mapping.MappedRoot).TrimEnd('\\');
             var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
@@ -149,7 +149,7 @@ public sealed class PathMapper(AppConfig config)
             return qpath;
         }
 
-        foreach (var mapping in config.PathMappings)
+        foreach (var mapping in OrderedPathMappings())
         {
             var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
             if (source.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase) &&
@@ -164,6 +164,18 @@ public sealed class PathMapper(AppConfig config)
 
     public static IReadOnlyList<PathMapping> DiscoverWindowsPathMappings()
     {
+        return DiscoverWindowsDriveMappings()
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.QsirchShareRoot))
+            .Select(mapping => new PathMapping
+            {
+                ShareRoot = mapping.QsirchShareRoot,
+                MappedRoot = mapping.DriveRoot,
+            })
+            .ToList();
+    }
+
+    public static IReadOnlyList<WindowsDriveMapping> DiscoverWindowsDriveMappings()
+    {
         return ReadMappedDrives()
             .Select(drive =>
             {
@@ -171,15 +183,107 @@ public sealed class PathMapper(AppConfig config)
                     .Trim('\\')
                     .Split('\\', StringSplitOptions.RemoveEmptyEntries);
                 var shareName = parts.Length >= 2 ? parts[^1] : "";
-                return new PathMapping
-                {
-                    ShareRoot = string.IsNullOrWhiteSpace(shareName) ? "" : "\\" + shareName,
-                    MappedRoot = drive.LocalRoot,
-                };
+                return new WindowsDriveMapping(
+                    drive.LocalRoot,
+                    drive.Remote,
+                    string.IsNullOrWhiteSpace(shareName) ? "" : "\\" + shareName);
             })
-            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.ShareRoot))
-            .OrderBy(mapping => mapping.MappedRoot, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(mapping => mapping.DriveRoot, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    public static void RefreshWindowsDriveMappings()
+    {
+        lock (MappedDrivesGate)
+        {
+            _mappedDrives = [];
+            _mappedDrivesExpiresUtc = DateTime.MinValue;
+        }
+    }
+
+    public static bool TryMapNetworkDrive(string driveRoot, string networkPath, bool reconnectAtSignIn, out string error)
+    {
+        error = "";
+        var drive = Normalize(driveRoot).TrimEnd('\\').ToUpperInvariant();
+        var remote = Normalize(networkPath).TrimEnd('\\');
+        if (!Regex.IsMatch(drive, "^[A-Z]:$"))
+        {
+            error = "Choose a drive letter such as X:.";
+            return false;
+        }
+        if (!Regex.IsMatch(remote, @"^\\\\[^\\]+\\[^\\]+"))
+        {
+            error = "Enter a network path such as \\server\\share.";
+            return false;
+        }
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo("net.exe")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                },
+            };
+            process.StartInfo.ArgumentList.Add("use");
+            process.StartInfo.ArgumentList.Add(drive);
+            process.StartInfo.ArgumentList.Add(remote);
+            process.StartInfo.ArgumentList.Add($"/persistent:{(reconnectAtSignIn ? "yes" : "no")}");
+            process.Start();
+            var output = process.StandardOutput.ReadToEnd();
+            var standardError = process.StandardError.ReadToEnd();
+            if (!process.WaitForExit(8000))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                error = "Windows did not finish mapping the network drive in time.";
+                return false;
+            }
+            if (process.ExitCode != 0)
+            {
+                var reason = string.IsNullOrWhiteSpace(standardError) ? output : standardError;
+                error = string.IsNullOrWhiteSpace(reason)
+                    ? "Windows could not map the network drive."
+                    : reason.Trim();
+                return false;
+            }
+
+            RefreshWindowsDriveMappings();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("path", ex, $"network drive mapping failed drive=\"{drive}\" remote=\"{remote}\"");
+            error = "Windows could not map the network drive. Check the path and your access.";
+            return false;
+        }
+    }
+
+    public static bool IsValidManualMapping(PathMapping mapping, out string error)
+    {
+        var source = Normalize(mapping.ShareRoot);
+        var target = Normalize(mapping.MappedRoot);
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(target))
+        {
+            error = "Each path mapping needs both a Qsirch share path and a Windows path.";
+            return false;
+        }
+        if (!source.StartsWith('\\'))
+        {
+            error = "A Qsirch share path must begin with a backslash, for example \\Shared.";
+            return false;
+        }
+        if (!Regex.IsMatch(target, @"^(?:[A-Za-z]:\\?|\\\\[^\\]+\\[^\\]+)"))
+        {
+            error = "A Windows path must be a drive such as X:\\ or a UNC path such as \\server\\share.";
+            return false;
+        }
+
+        error = "";
+        return true;
     }
 
     private static string? ResolveExistingMappedPath(string qpath)
@@ -259,7 +363,7 @@ public sealed class PathMapper(AppConfig config)
     private static string? ResolveFromMappedDrives(string qpath)
     {
         var relative = qpath.TrimStart('\\');
-        foreach (var drive in NetUseDrives())
+        foreach (var drive in NetUseDrives().OrderByDescending(drive => Normalize(drive.Remote).Length))
         {
             var remote = Normalize(drive.Remote).TrimEnd('\\');
             if (qpath.StartsWith(remote, StringComparison.OrdinalIgnoreCase))
@@ -292,7 +396,7 @@ public sealed class PathMapper(AppConfig config)
     private static string? ResolveUncFromMappedDrives(string qpath)
     {
         var relative = qpath.TrimStart('\\');
-        foreach (var drive in NetUseDrives())
+        foreach (var drive in NetUseDrives().OrderByDescending(drive => Normalize(drive.Remote).Length))
         {
             var remote = Normalize(drive.Remote).TrimEnd('\\');
             if (qpath.StartsWith(remote, StringComparison.OrdinalIgnoreCase))
@@ -354,6 +458,14 @@ public sealed class PathMapper(AppConfig config)
             yield return "Shared\\" + shareName;
         }
     }
+
+    // Nested drive mappings must beat their parent share. For example, an S: mapping
+    // for Shared\\Scans should win over X: mapped to the broader Shared root.
+    private IEnumerable<PathMapping> OrderedPathMappings() => config.PathMappings
+        .OrderByDescending(mapping => CandidateMappingPrefixes(mapping.ShareRoot)
+            .Select(prefix => prefix.Length)
+            .DefaultIfEmpty(0)
+            .Max());
 
     private static bool TryMatchPathRoot(string path, string root, out string rest)
     {
@@ -441,3 +553,5 @@ public sealed class PathMapper(AppConfig config)
 
     private sealed record MappedDrive(string LocalRoot, string Remote);
 }
+
+public sealed record WindowsDriveMapping(string DriveRoot, string NetworkPath, string QsirchShareRoot);

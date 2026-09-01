@@ -128,7 +128,8 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
         }
         else if (_handler is IInitializeWithFile initializeWithFile)
         {
-            initializeWithFile.Initialize(_path, StorageRead);
+            // Office preview handlers may reopen the supplied path while rendering.
+            initializeWithFile.Initialize(_path, StorageRead | StorageShareDenyNone);
             initializationMode = "file";
         }
         else if (_handler is IInitializeWithItem initializeWithItem)
@@ -284,6 +285,18 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
         public int Bottom = bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMessage
+    {
+        public IntPtr Window;
+        public uint Message;
+        public IntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public int PointX;
+        public int PointY;
+    }
+
     [ComImport, Guid("8895b1c6-b41f-4c1c-a562-0d564250836f"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IPreviewHandler
     {
@@ -293,7 +306,7 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
         void Unload();
         void SetFocus();
         void QueryFocus(out IntPtr hwnd);
-        void TranslateAccelerator(IntPtr message);
+        void TranslateAccelerator(ref NativeMessage message);
     }
 
     [ComImport, Guid("b7d14566-0509-4cce-a71f-0a554233bd9b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -323,7 +336,10 @@ public sealed class PreviewFailureEventArgs(string message) : EventArgs
 [ComVisible(true), Guid("fec87aaf-35f9-447a-adb7-20234491401a"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IPreviewHandlerFrame
 {
+    [PreserveSig]
     int GetWindowContext(out PreviewHandlerFrameInfo info);
+
+    [PreserveSig]
     int TranslateAccelerator(IntPtr message);
 }
 
@@ -339,7 +355,9 @@ public sealed class PreviewHandlerFrame(IntPtr window) : IPreviewHandlerFrame
 
     public int TranslateAccelerator(IntPtr message) => 1;
 
-    [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr window, out ShellPreviewHost.NativeRect rect);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetClientRect(IntPtr window, out ShellPreviewHost.NativeRect rect);
 }
 
 [StructLayout(LayoutKind.Sequential)]

@@ -14,9 +14,12 @@ public sealed class NavigationTreeNode : INotifyPropertyChanged
     public string Name { get; init; } = "";
     public string FullPath { get; init; } = "";
     public bool IsPlaceholder { get; init; }
+    public bool IsRecoveryFolder { get; init; }
+    public bool IsShareRoot { get; init; }
     public Func<NavigationTreeNode, Task>? ExpandAsync { get; init; }
     public ObservableCollection<NavigationTreeNode> Children { get; } = [];
-    public string Glyph => "\uE8B7";
+    public string Glyph => IsRecoveryFolder ? "\uE74D" : "\uE8B7";
+    public object? IconSource { get; init; }
 
     public void EnsurePlaceholder()
     {

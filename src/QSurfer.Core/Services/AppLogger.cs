@@ -11,6 +11,7 @@ public static class AppLogger
     private static int _draining;
     private const long MaxBytes = 2 * 1024 * 1024;
     private const long MaxSessionLogBytes = 256 * 1024;
+    private const int LogLockAttempts = 8;
 
     public static string LogPath
     {
@@ -50,6 +51,11 @@ public static class AppLogger
             Directory.CreateDirectory(Path.GetDirectoryName(sessionPath) ?? AppContext.BaseDirectory);
             lock (Gate)
             {
+                using var logLock = AcquireFileLock(sessionPath);
+                if (logLock == null)
+                {
+                    return;
+                }
                 RotateIfNeeded(sessionPath, MaxSessionLogBytes);
                 File.AppendAllText(sessionPath, line);
             }
@@ -95,6 +101,11 @@ public static class AppLogger
                 foreach (var (logPath, lines) in pendingByPath)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(logPath) ?? AppContext.BaseDirectory);
+                    using var logLock = AcquireFileLock(logPath);
+                    if (logLock == null)
+                    {
+                        continue;
+                    }
                     RotateIfNeeded(logPath, MaxBytes);
                     using var writer = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
                     foreach (var line in lines)
@@ -130,6 +141,27 @@ public static class AppLogger
             File.Delete(oldPath);
         }
         File.Move(logPath, oldPath);
+    }
+
+    private static FileStream? AcquireFileLock(string logPath)
+    {
+        var lockPath = logPath + ".lock";
+        for (var attempt = 0; attempt < LogLockAttempts; attempt++)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) when (attempt < LogLockAttempts - 1)
+            {
+                Thread.Sleep(15);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+        return null;
     }
 
     private static string LogPathForArea(string area) => area switch

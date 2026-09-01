@@ -20,7 +20,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private PathMapper _mapper;
     private ResultRules _rules;
     private readonly NasFileBrowser _browser = new();
+    private ObservableCollection<BrowserItem> _browserItems = [];
+    private readonly Dictionary<SearchTabViewModel, BrowserTabState> _browserTabs = [];
     private readonly Dictionary<string, Bitmap> _iconCache = new(StringComparer.OrdinalIgnoreCase);
+    private Bitmap? _recycleBinIcon;
     private readonly HashSet<string> _iconLoadsInFlight = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _iconLoadGate = new(3, 3);
     private CancellationTokenSource? _browseCancellation;
@@ -33,7 +36,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private FavoriteTreeNode? _selectedFavoriteNode;
     private string _browserLocation = "";
     private bool _isFavoritesVisible = true;
-    private bool _isPreviewVisible = true;
+    private bool _isPreviewVisible;
     private bool _isNavigationVisible;
     private int _browserHistoryIndex = -1;
     private string _previewTitle = "Select a result";
@@ -41,6 +44,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private string _previewLocation = "";
     private object? _nativePreviewHost;
     private bool _isRecentSearchesOpen;
+    private bool _isNasNavigationOnline;
+    private bool _isLoadingNasNavigation;
+    private string _nasNavigationStatus = "NAS navigation is waiting for a connection.";
+    private readonly DispatcherTimer _nasNavigationRetryTimer;
     private int _nextTabNumber = 1;
 
     public MainWindowViewModel()
@@ -63,7 +70,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             new FileTypeFilter { Name = "Text", Extensions = ["txt", "log", "xml", "json", "html", "htm"] },
         ];
 
-        BrowserItems.CollectionChanged += BrowserItemsCollectionChanged;
+        _browserItems.CollectionChanged += BrowserItemsCollectionChanged;
+        _nasNavigationRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        _nasNavigationRetryTimer.Tick += NasNavigationRetryTimer_Tick;
         NewSearchTabCommand = new AsyncCommand(NewSearchTabAsync);
         BrowseCommand = new AsyncCommand(BrowseAtLocationAsync, () => !string.IsNullOrWhiteSpace(BrowserLocation));
         RefreshBrowserCommand = new AsyncCommand(() => BrowseAsync(), () => !string.IsNullOrWhiteSpace(BrowserLocation));
@@ -88,6 +97,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         SelectedSearchTab = SearchTabs[0];
         EnsureNavigationRoots();
         _ = LoadNasNavigationRootAsync();
+        _nasNavigationRetryTimer.Start();
         _ = RefreshFavoritesAsync();
         _ = RefreshRecentSearchesAsync();
     }
@@ -95,7 +105,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<SearchTabViewModel> SearchTabs { get; } = [];
-    public ObservableCollection<BrowserItem> BrowserItems { get; } = [];
+    public ObservableCollection<BrowserItem> BrowserItems
+    {
+        get => _browserItems;
+        private set
+        {
+            if (ReferenceEquals(_browserItems, value))
+            {
+                return;
+            }
+
+            _browserItems.CollectionChanged -= BrowserItemsCollectionChanged;
+            _browserItems = value;
+            _browserItems.CollectionChanged += BrowserItemsCollectionChanged;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasBrowserItems));
+            OnPropertyChanged(nameof(HasNoBrowserItems));
+        }
+    }
     public ObservableCollection<NavigationTreeNode> NavigationRoots { get; } = [];
     public ObservableCollection<BrowserBreadcrumb> BrowserBreadcrumbs { get; } = [];
     public ObservableCollection<FavoriteTreeNode> FavoriteTree { get; } = [];
@@ -123,22 +150,59 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                                          !string.IsNullOrWhiteSpace(_config.User) &&
                                          !string.IsNullOrWhiteSpace(_config.Password);
     public bool NeedsConnection => !IsConnectionConfigured;
+    public string CurrentWindowsUser
+    {
+        get
+        {
+            var user = GlobalRuleAuthorization.GetCurrentUserStatus();
+            return $"{user.UserName} | {user.DisplayStatus}";
+        }
+    }
+
+    public string ConnectionSummary => IsConnectionConfigured
+        ? $"NAS: {_config.Host}:{_config.Port}"
+        : "NAS: not configured";
+    public string NasConnectionStatus => IsConnectionConfigured
+        ? $"{ConnectionSummary} | {NasNavigationStatus}"
+        : ConnectionSummary;
+    public string NasNavigationStatus
+    {
+        get => _nasNavigationStatus;
+        private set
+        {
+            if (SetField(ref _nasNavigationStatus, value))
+            {
+                OnPropertyChanged(nameof(NasConnectionStatus));
+            }
+        }
+    }
+    public bool IsNasNavigationOnline
+    {
+        get => _isNasNavigationOnline;
+        private set => SetField(ref _isNasNavigationOnline, value);
+    }
+    public bool ShowNasNavigationStatus => !IsNasNavigationOnline;
 
     public SearchTabViewModel? SelectedSearchTab
     {
         get => _selectedSearchTab;
         set
         {
-            var previous = _selectedSearchTab;
+            var previousTab = _selectedSearchTab;
             if (!SetField(ref _selectedSearchTab, value))
             {
                 return;
             }
-            previous?.SetWorkspaceMode(false);
+
+            if (previousTab != null)
+            {
+                _browserTabs[previousTab] = CaptureBrowserTab();
+            }
+
             if (value != null)
             {
-                IsNavigationVisible = false;
-                value.SetWorkspaceMode(false);
+                RestoreBrowserTab(value);
+                IsNavigationVisible = value.IsBrowsing;
                 Status = value.Status;
             }
         }
@@ -203,11 +267,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             }
 
             OnPropertyChanged(nameof(IsSearchContentVisible));
+            OnPropertyChanged(nameof(IsRecycleBinView));
             SelectedSearchTab?.SetWorkspaceMode(value);
         }
     }
 
     public bool IsSearchContentVisible => !IsNavigationVisible;
+    public bool IsRecycleBinView => IsNavigationVisible && IsRecycleFolderPath(BrowserLocation);
 
     public string PreviewTitle
     {
@@ -251,6 +317,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             BrowseCommand.RaiseCanExecuteChanged();
             RefreshBrowserCommand.RaiseCanExecuteChanged();
             NavigateUpCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(IsRecycleBinView));
         }
     }
 
@@ -283,25 +350,68 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task LoadNavigationChildrenAsync(NavigationTreeNode node)
     {
+        if (_config.Behavior.FlattenRecycleBin && IsRecycleBinRootPath(node.FullPath))
+        {
+            node.Children.Clear();
+            node.ChildrenLoaded = true;
+            return;
+        }
+
         if (node.ChildrenLoaded || string.IsNullOrWhiteSpace(node.FullPath))
         {
             return;
         }
 
+        var isNasRoot = IsNasNavigationRoot(node.FullPath);
         try
         {
             var listing = await _browser.BrowseAsync(node.FullPath);
             node.Children.Clear();
             foreach (var item in listing.Items.Where(item => item.IsFolder))
             {
-                node.Children.Add(CreateNavigationNode(NavigationTreeDisplayName(item.FullPath), item.FullPath));
+                if (!_config.Behavior.ShowRecoverySystemFolders &&
+                    (IsSnapshotFolder(item.Name) || (IsRecycleFolder(item.Name) && !node.IsShareRoot)))
+                {
+                    continue;
+                }
+                if (!_config.Behavior.ShowQSurferSafetyCopies && IsQSurferSafetyCopy(item))
+                {
+                    continue;
+                }
+
+                var isRecoveryFolder = node.IsShareRoot && IsRecycleFolder(item.Name);
+                var child = CreateNavigationNode(
+                    isRecoveryFolder ? "Recycle Bin" : NavigationTreeDisplayName(item.FullPath),
+                    item.FullPath,
+                    isRecoveryFolder,
+                    isNasRoot);
+                node.Children.Add(child);
+                if (ShouldRestoreExpanded(child.FullPath))
+                {
+                    child.IsExpanded = true;
+                }
             }
             node.ChildrenLoaded = true;
+            if (isNasRoot)
+            {
+                SetNasNavigationState(true, "Online");
+            }
             AppLogger.Info("browse", $"navigation folder=\"{node.FullPath}\" folders={node.Children.Count}");
         }
         catch (Exception ex)
         {
-            node.ChildrenLoaded = true;
+            if (isNasRoot)
+            {
+                // Leave the node expandable and its placeholder intact so a VPN or NAS
+                // reconnect can fill the same tree without rebuilding the UI.
+                node.ChildrenLoaded = false;
+                node.EnsurePlaceholder();
+                SetNasNavigationState(false, "Unavailable - retrying automatically");
+            }
+            else
+            {
+                node.ChildrenLoaded = true;
+            }
             AppLogger.Warn("browse", $"navigation tree unavailable folder=\"{node.FullPath}\" reason=\"{ex.Message}\"");
         }
     }
@@ -317,6 +427,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         IsPreviewVisible = _config.Behavior.PreviewPane;
         OnPropertyChanged(nameof(IsConnectionConfigured));
         OnPropertyChanged(nameof(NeedsConnection));
+        OnPropertyChanged(nameof(ConnectionSummary));
+        OnPropertyChanged(nameof(NasConnectionStatus));
         Status = IsConnectionConfigured ? "Connection settings saved" : "Add NAS connection details to search";
     }
 
@@ -416,6 +528,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             AddSearchTab();
         }
         SelectedSearchTab = SearchTabs[Math.Min(index, SearchTabs.Count - 1)];
+        _browserTabs.Remove(tab);
         PersistPinnedTabs();
     }
 
@@ -446,7 +559,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         tab.PinChanged += (_, _) => PersistPinnedTabs();
         tab.PropertyChanged += SearchTabPropertyChanged;
         tab.SearchContents = _config.Behavior.SearchContents;
-        tab.ExactMatch = _config.Behavior.ExactMatch;
+        tab.ExactMatch = false;
         tab.SelectedViewMode = tab.ViewModes.FirstOrDefault(view => view.Key.Equals(_config.Behavior.ResultView, StringComparison.OrdinalIgnoreCase)) ?? tab.ViewModes[0];
         tab.SelectedSortMode = tab.SortModes.FirstOrDefault(sort => sort.Key.Equals(_config.Behavior.ResultSort, StringComparison.OrdinalIgnoreCase)) ?? tab.SortModes[0];
         SearchTabs.Add(tab);
@@ -492,16 +605,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         SetTabStatus(tab, "Searching...");
         try
         {
+            await _client.EnsureAuthenticatedAsync(token);
             var starredKeys = await Task.Run(_history.StarredKeys, token);
             var typeFilter = _fileTypes[0];
             var resultLimit = Math.Clamp(_config.Behavior.MaxSearchResults, 50, 5000);
             var firstPageSize = Math.Clamp(_config.Behavior.FirstPageSize, 5, 500);
             var nextPageSize = Math.Clamp(_config.Behavior.NextPageSize, 10, 500);
-            var serverQuery = tab.ExactMatch ? $"name:\"{query}\"" : query;
-            if (tab.SearchContents)
-            {
-                serverQuery = query;
-            }
+            var serverQuery = BuildServerQuery(query, tab.SearchContents);
             if (tab.HasDateRange)
             {
                 var from = tab.DateFrom?.ToString("yyyy-MM-dd") ?? "1900-01-01";
@@ -532,8 +642,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 ? _client.SearchDirectoriesAsync(query, 100, token)
                 : Task.FromResult<IReadOnlyList<SearchResult>>([]);
 
-            await Task.WhenAll(recentFiles, folders);
-            AddVisibleResults(tab, folders.Result, token, version, starredKeys);
+            _ = PaintDirectoryResultsAsync(tab, folders, token, version, starredKeys);
+            await recentFiles;
 
             IReadOnlyList<SearchResult> firstPage;
             if (tab.HasDateRange)
@@ -628,11 +738,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var query = tab.Query.Trim();
-            var serverQuery = tab.ExactMatch ? $"name:\"{query}\"" : query;
-            if (tab.SearchContents)
-            {
-                serverQuery = query;
-            }
+            var serverQuery = BuildServerQuery(query, tab.SearchContents);
             var starredKeys = await Task.Run(_history.StarredKeys, token);
             var pageSize = Math.Clamp(_config.Behavior.NextPageSize, 10, 500);
             var page = await _client.SearchAsync(
@@ -927,7 +1033,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
         try
         {
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = "properties" });
+            _browser.ShowProperties(new BrowserItem(
+                result.FileName,
+                path,
+                result.IsFolder,
+                result.Size,
+                result.ModifiedDate ?? DateTime.MinValue));
         }
         catch (Exception ex)
         {
@@ -1066,22 +1177,47 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         Status = groups.Count == 0 ? "Favorite updated" : "Favorite groups updated";
     }
 
-    private async Task SaveCurrentSearchAsync(SearchTabViewModel tab)
+    public async Task SaveSearchAsync(SearchTabViewModel tab, string name)
     {
         var query = tab.Query.Trim();
-        if (string.IsNullOrWhiteSpace(query))
+        var displayName = name.Trim();
+        if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(displayName))
         {
             return;
         }
 
-        var saved = await Task.Run(() => _history.SaveSearch(query, query));
+        var saved = await Task.Run(() => _history.SaveSearch(displayName, query));
         if (!saved)
         {
             SetTabStatus(tab, "Could not save search.");
             return;
         }
         await RefreshFavoritesAsync();
-        SetTabStatus(tab, "Saved search");
+        SetTabStatus(tab, $"Saved search: {displayName}");
+    }
+
+    private Task SaveCurrentSearchAsync(SearchTabViewModel tab) => SaveSearchAsync(tab, tab.Query);
+
+    private async Task PaintDirectoryResultsAsync(
+        SearchTabViewModel tab,
+        Task<IReadOnlyList<SearchResult>> folders,
+        CancellationToken token,
+        int version,
+        ISet<string> starredKeys)
+    {
+        try
+        {
+            var results = await folders;
+            await Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, results, token, version, starredKeys));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            AppLogger.Info("search", $"QSurfer directory search canceled tab=\"{tab.Title}\"");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("search", $"QSurfer directory search skipped tab=\"{tab.Title}\" error=\"{ex.Message}\"");
+        }
     }
 
     private void AddVisibleResults(SearchTabViewModel tab, IEnumerable<SearchResult> source, CancellationToken token, int version, ISet<string>? starredKeys = null)
@@ -1097,7 +1233,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         var accepted = new List<SearchResult>();
         foreach (var result in source)
         {
-            if (_rules.IsHidden(result))
+            if ((!_config.Behavior.ShowRecoverySystemFolders && IsRecoverySystemResult(result)) ||
+                (!_config.Behavior.ShowQSurferSafetyCopies && IsQSurferSafetyCopy(result)) ||
+                _rules.IsHidden(result))
             {
                 hidden++;
                 continue;
@@ -1243,6 +1381,81 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 ? "__folder__"
                 : string.IsNullOrWhiteSpace(result.Extension) ? "__file__" : "." + result.Extension.TrimStart('.').ToLowerInvariant();
 
+    private void QueueBrowserIcons(IEnumerable<BrowserItem> items, CancellationToken token)
+    {
+        foreach (var item in items)
+        {
+            if (token.IsCancellationRequested || item.IconSource != null)
+            {
+                continue;
+            }
+
+            var key = IconCacheKey(item);
+            if (_iconCache.TryGetValue(key, out var cached))
+            {
+                item.IconSource = cached;
+                continue;
+            }
+
+            lock (_iconLoadsInFlight)
+            {
+                if (!_iconLoadsInFlight.Add(key))
+                {
+                    continue;
+                }
+            }
+            _ = LoadBrowserIconAsync(item, key, token);
+        }
+    }
+
+    private async Task LoadBrowserIconAsync(BrowserItem item, string key, CancellationToken token)
+    {
+        var enteredGate = false;
+        try
+        {
+            await _iconLoadGate.WaitAsync(token);
+            enteredGate = true;
+            var icon = await Task.Run(() => WindowsShellIconService.FileTypeIcon(Path.GetExtension(item.Name), item.IsFolder), token);
+            if (icon != null)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() => ApplyCachedBrowserIcon(key, item, icon));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("icons", $"browser shell icon failed name=\"{item.Name}\" error=\"{ex.Message}\"");
+        }
+        finally
+        {
+            lock (_iconLoadsInFlight)
+            {
+                _iconLoadsInFlight.Remove(key);
+            }
+            if (enteredGate)
+            {
+                _iconLoadGate.Release();
+            }
+        }
+    }
+
+    private void ApplyCachedBrowserIcon(string key, BrowserItem item, Bitmap icon)
+    {
+        _iconCache[key] = icon;
+        item.IconSource = icon;
+        foreach (var candidate in BrowserItems.Where(candidate => candidate.IconSource == null && IconCacheKey(candidate).Equals(key, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidate.IconSource = icon;
+        }
+    }
+
+    private static string IconCacheKey(BrowserItem item) =>
+        item.IsFolder
+            ? "__folder__"
+            : string.IsNullOrWhiteSpace(Path.GetExtension(item.Name)) ? "__file__" : Path.GetExtension(item.Name).ToLowerInvariant();
+
     private static (string? SortBy, string SortDirection) ServerSortFor(SearchTabViewModel tab) =>
         tab.PrimarySortKey switch
         {
@@ -1251,6 +1464,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             "size" => ("size", "desc"),
             _ => (null, "desc"),
         };
+
+    // Qsirch's bare query searches indexed document content as well as filenames.
+    // The explicit name field keeps the default search fast and filename-only.
+    private static string BuildServerQuery(string query, bool searchContents) =>
+        searchContents ? query : $"name:\"{query.Replace("\"", "\\\"")}\"";
 
     private static IReadOnlyList<SearchResult> RecentResults(IEnumerable<SearchResult> results, DateTime cutoff) =>
         results.Where(result => result.ModifiedDate is { } modified && modified.Date >= cutoff).ToList();
@@ -1339,6 +1557,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task BrowseAsync(bool addToHistory = true)
     {
+        var browserTab = SelectedSearchTab;
+        if (browserTab == null)
+        {
+            return;
+        }
+
         var location = _mapper.ResolveBrowserPath(BrowserLocation.Trim());
         if (string.IsNullOrWhiteSpace(location))
         {
@@ -1355,27 +1579,70 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         _browseCancellation = new CancellationTokenSource();
         var token = _browseCancellation.Token;
 
-        BrowserItems.Clear();
         SelectedBrowserItem = null;
-        Status = "Loading folder...";
+        var flattenRecycleBin = _config.Behavior.FlattenRecycleBin && IsRecycleBinRootPath(location);
+        if (flattenRecycleBin)
+        {
+            // A recursive scan can take a while on a large NAS Recycle Bin. Clear the
+            // prior directory contents so only actual deleted files are ever shown here.
+            BrowserItems = [];
+        }
+
+        Status = flattenRecycleBin ? "Scanning Recycle Bin..." : "Loading folder...";
+        browserTab.Status = Status;
         try
         {
-            var listing = await _browser.BrowseAsync(location, token);
-            if (token.IsCancellationRequested)
+            DirectoryReadResult listing;
+            if (flattenRecycleBin)
+            {
+                IProgress<IReadOnlyList<BrowserItem>> progress = new Progress<IReadOnlyList<BrowserItem>>(batch =>
+                {
+                    if (token.IsCancellationRequested || !ReferenceEquals(browserTab, SelectedSearchTab))
+                    {
+                        return;
+                    }
+
+                    var visibleBatch = batch
+                        .Where(item => ShouldShowBrowserItem(item, location))
+                        .ToList();
+                    if (visibleBatch.Count == 0)
+                    {
+                        return;
+                    }
+
+                    foreach (var item in visibleBatch)
+                    {
+                        BrowserItems.Add(item);
+                    }
+                    QueueBrowserIcons(visibleBatch, token);
+                    Status = $"Scanning Recycle Bin... {BrowserItems.Count:n0} files found";
+                    browserTab.Status = Status;
+                });
+                listing = await _browser.BrowseRecycleBinAsync(location, progress.Report, token);
+            }
+            else
+            {
+                listing = await _browser.BrowseAsync(location, token);
+            }
+            if (token.IsCancellationRequested || !ReferenceEquals(browserTab, SelectedSearchTab))
             {
                 return;
             }
 
             BrowserLocation = listing.FolderPath;
-            SelectedSearchTab?.SetBrowseLocation(BrowserLocation);
+            browserTab.SetBrowseLocation(BrowserLocation);
             UpdateBrowserBreadcrumbs(listing.FolderPath);
-            foreach (var item in listing.Items)
-            {
-                BrowserItems.Add(item);
-            }
+            // Swap completed folder data in one step. Clearing a shared observable
+            // collection while hidden browser views retain a selection can crash Avalonia.
+            var visibleItems = listing.Items
+                .Where(item => ShouldShowBrowserItem(item, listing.FolderPath))
+                .ToList();
+            BrowserItems = new ObservableCollection<BrowserItem>(visibleItems);
+            QueueBrowserIcons(BrowserItems, token);
             Status = listing.SkippedCount == 0
                 ? $"Ready {BrowserItems.Count:n0} items"
                 : $"Ready {BrowserItems.Count:n0} items, {listing.SkippedCount:n0} unavailable";
+            browserTab.Status = Status;
             if (addToHistory)
             {
                 RecordBrowserLocation(listing.FolderPath);
@@ -1388,7 +1655,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception ex)
         {
             AppLogger.Error("browse", ex, $"failed folder=\"{location}\"");
-            Status = ex.Message;
+            browserTab.Status = ex.Message;
+            if (ReferenceEquals(browserTab, SelectedSearchTab))
+            {
+                Status = ex.Message;
+            }
         }
     }
 
@@ -1416,9 +1687,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             NavigationRoots.Add(CreateNavigationNode(name, path));
         }
 
-        var roots = _config.PathMappings
-            .Where(mapping => !MappingBelongsToConfiguredNas(mapping))
+        var roots = PathMapper.DiscoverWindowsPathMappings()
             .Select(mapping => NormalizeNavigationRoot(mapping.MappedRoot))
+            .Concat(_config.PathMappings
+            .Where(mapping => !MappingBelongsToConfiguredNas(mapping))
+            .Select(mapping => NormalizeNavigationRoot(mapping.MappedRoot)))
             .Where(path => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1450,6 +1723,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         var nasRoot = NasNavigationRoot(_config.Host);
         if (string.IsNullOrWhiteSpace(nasRoot))
         {
+            SetNasNavigationState(false, "NAS navigation is not configured.");
+            return;
+        }
+
+        if (_isLoadingNasNavigation)
+        {
             return;
         }
 
@@ -1457,7 +1736,32 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             node.FullPath.Equals(nasRoot, StringComparison.OrdinalIgnoreCase));
         if (root != null)
         {
-            await LoadNavigationChildrenAsync(root);
+            if (root.ChildrenLoaded)
+            {
+                SetNasNavigationState(true, "Online");
+                return;
+            }
+
+            _isLoadingNasNavigation = true;
+            SetNasNavigationState(false, "Checking NAS folders...");
+            root.EnsurePlaceholder();
+            try
+            {
+                await LoadNavigationChildrenAsync(root);
+                FlattenNasNavigationRoot(root);
+            }
+            finally
+            {
+                _isLoadingNasNavigation = false;
+            }
+        }
+    }
+
+    private async void NasNavigationRetryTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!IsNasNavigationOnline)
+        {
+            await LoadNasNavigationRootAsync();
         }
     }
 
@@ -1473,28 +1777,167 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         return name;
     }
 
-    private NavigationTreeNode CreateNavigationNode(string name, string path)
+    private void FlattenNasNavigationRoot(NavigationTreeNode root)
+    {
+        if (!root.ChildrenLoaded)
+        {
+            return;
+        }
+
+        var shares = root.Children.Where(node => !node.IsPlaceholder).ToList();
+        if (shares.Count == 0)
+        {
+            return;
+        }
+
+        var rootIndex = NavigationRoots.IndexOf(root);
+        if (rootIndex < 0)
+        {
+            return;
+        }
+
+        // Shares resolve to their mapped drive when one exists. Replace the generic
+        // mapped-drive root with the populated NAS share so its recovery entry stays attached.
+        var duplicateRoots = NavigationRoots
+            .Where(node => !ReferenceEquals(node, root) && shares.Any(share =>
+                share.FullPath.Equals(node.FullPath, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        var insertionIndex = rootIndex - duplicateRoots.Count(node => NavigationRoots.IndexOf(node) < rootIndex);
+
+        NavigationRoots.Remove(root);
+        foreach (var duplicate in duplicateRoots)
+        {
+            NavigationRoots.Remove(duplicate);
+        }
+
+        insertionIndex = Math.Clamp(insertionIndex, 0, NavigationRoots.Count);
+        for (var index = 0; index < shares.Count; index++)
+        {
+            NavigationRoots.Insert(insertionIndex + index, shares[index]);
+        }
+    }
+
+    private NavigationTreeNode CreateNavigationNode(
+        string name,
+        string path,
+        bool isRecoveryFolder = false,
+        bool isShareRoot = false)
     {
         var node = new NavigationTreeNode
         {
             Name = name,
             FullPath = _mapper.ResolveBrowserPath(path),
+            IsRecoveryFolder = isRecoveryFolder,
+            IsShareRoot = isShareRoot,
+            IconSource = isRecoveryFolder ? RecycleBinIcon() : null,
             ExpandAsync = LoadNavigationChildrenAsync,
         };
-        node.EnsurePlaceholder();
+        if (!_config.Behavior.FlattenRecycleBin || !IsRecycleBinRootPath(node.FullPath))
+        {
+            node.EnsurePlaceholder();
+        }
+        node.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(NavigationTreeNode.IsExpanded))
+            {
+                RecordNavigationExpansion(node);
+            }
+        };
+        if (ShouldRestoreExpanded(node.FullPath))
+        {
+            node.IsExpanded = true;
+        }
         return node;
+    }
+
+    private bool IsNasNavigationRoot(string path)
+    {
+        var root = NasNavigationRoot(_config.Host);
+        return !string.IsNullOrWhiteSpace(root) && root.Equals(path, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetNasNavigationState(bool online, string status)
+    {
+        IsNasNavigationOnline = online;
+        NasNavigationStatus = status;
+        OnPropertyChanged(nameof(ShowNasNavigationStatus));
+    }
+
+    private bool ShouldRestoreExpanded(string path) =>
+        _config.Behavior.NavigationExpandedPaths.Any(saved => saved.Equals(path, StringComparison.OrdinalIgnoreCase));
+
+    private void RecordNavigationExpansion(NavigationTreeNode node)
+    {
+        if (node.IsPlaceholder || string.IsNullOrWhiteSpace(node.FullPath))
+        {
+            return;
+        }
+
+        _config.Behavior.NavigationExpandedPaths.RemoveAll(path => path.Equals(node.FullPath, StringComparison.OrdinalIgnoreCase));
+        if (node.IsExpanded)
+        {
+            _config.Behavior.NavigationExpandedPaths.Add(node.FullPath);
+        }
     }
 
     private bool MappingBelongsToConfiguredNas(PathMapping mapping)
     {
         var nasRoot = NasNavigationRoot(_config.Host)?.TrimStart('\\');
-        var shareRoot = (mapping.ShareRoot ?? "").Trim().Trim('\\', '/');
-        return !string.IsNullOrWhiteSpace(nasRoot) &&
+        var rawShareRoot = (mapping.ShareRoot ?? "").Trim();
+        var shareRoot = rawShareRoot.Trim('\\', '/');
+        if (string.IsNullOrWhiteSpace(nasRoot) || string.IsNullOrWhiteSpace(shareRoot))
+        {
+            return false;
+        }
+
+        return !rawShareRoot.StartsWith(@"\\", StringComparison.Ordinal) ||
                shareRoot.StartsWith(nasRoot + "\\", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsDriveRoot(string path) =>
         path.Length == 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+
+    private static bool IsRecycleFolder(string name) =>
+        name.Equals("@Recycle", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("@RecycleBin", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("#recycle", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSnapshotFolder(string name) =>
+        name.Equals("@Recently-Snapshot", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRecoverySystemFolder(string name) =>
+        IsRecycleFolder(name) || IsSnapshotFolder(name);
+
+    private static bool IsRecoverySystemResult(SearchResult result) =>
+        IsRecoverySystemFolder(result.FileName) ||
+        result.Path.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).Any(IsRecoverySystemFolder);
+
+    private static bool IsRecycleFolderPath(string path) =>
+        path.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).Any(IsRecycleFolder);
+
+    private static bool IsRecycleBinRootPath(string path)
+    {
+        var trimmed = (path ?? "").Trim().TrimEnd('\\', '/');
+        return IsRecycleFolder(Path.GetFileName(trimmed));
+    }
+
+    private static bool IsQSurferSafetyCopy(SearchResult result) =>
+        IsQSurferSafetyCopyName(result.FileName, result.IsFolder);
+
+    private static bool IsQSurferSafetyCopy(BrowserItem item) =>
+        IsQSurferSafetyCopyName(item.Name, item.IsFolder);
+
+    private static bool IsQSurferSafetyCopyName(string name, bool isFolder) => isFolder
+        ? name.EndsWith("@qsurfer", StringComparison.OrdinalIgnoreCase)
+        : name.EndsWith(".qsurfer", StringComparison.OrdinalIgnoreCase) ||
+          Path.GetFileNameWithoutExtension(name).EndsWith(".qsurfer", StringComparison.OrdinalIgnoreCase);
+
+    private bool ShouldShowBrowserItem(BrowserItem item, string folderPath) =>
+        (_config.Behavior.ShowRecoverySystemFolders || !IsRecoverySystemFolder(item.Name)) &&
+        (_config.Behavior.ShowQSurferSafetyCopies || !IsQSurferSafetyCopy(item)) &&
+        (item.IsFolder || !item.Name.StartsWith('~') || _config.Behavior.ShowHiddenTemporaryFiles);
+
+    private Bitmap? RecycleBinIcon() => _recycleBinIcon ??= WindowsShellIconService.RecycleBinIcon();
 
     private void RecordBrowserLocation(string location)
     {
@@ -1508,6 +1951,37 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
         _browserHistory.Add(location);
         _browserHistoryIndex = _browserHistory.Count - 1;
+        UpdateNavigationHistoryCommands();
+    }
+
+    private BrowserTabState CaptureBrowserTab() => new(
+        BrowserLocation,
+        BrowserItems,
+        BrowserBreadcrumbs.ToList(),
+        _browserHistory.ToList(),
+        _browserHistoryIndex,
+        SelectedBrowserItem);
+
+    private void RestoreBrowserTab(SearchTabViewModel tab)
+    {
+        if (!_browserTabs.TryGetValue(tab, out var state))
+        {
+            state = new BrowserTabState("", [], [], [], -1, null);
+            _browserTabs[tab] = state;
+        }
+
+        BrowserItems = state.Items;
+        BrowserBreadcrumbs.Clear();
+        foreach (var breadcrumb in state.Breadcrumbs)
+        {
+            BrowserBreadcrumbs.Add(breadcrumb);
+        }
+
+        _browserHistory.Clear();
+        _browserHistory.AddRange(state.History);
+        _browserHistoryIndex = state.HistoryIndex;
+        BrowserLocation = state.Location;
+        SelectedBrowserItem = state.SelectedItem;
         UpdateNavigationHistoryCommands();
     }
 
@@ -1689,6 +2163,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception ex)
         {
             AppLogger.Error("browse", ex, "delete failed");
+            Status = ex.Message;
+        }
+    }
+
+    public async Task RestoreRecycleItemsAsync(IEnumerable<BrowserItem> items, bool replaceExistingFiles)
+    {
+        try
+        {
+            var outcome = await _browser.RestoreFromRecycleAsync(items, replaceExistingFiles);
+            await BrowseAsync(addToHistory: false);
+            Status = outcome.RestoredCount == 1 ? "Restored 1 item" : $"Restored {outcome.RestoredCount:n0} items";
+            AppLogger.Info("browse", $"recycle restored count={outcome.RestoredCount}");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("browse", ex, "recycle restore failed");
             Status = ex.Message;
         }
     }
@@ -1910,8 +2400,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         string.Equals(left.Path, right.Path, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(left.FileName, right.FileName, StringComparison.OrdinalIgnoreCase);
 
+    private sealed record BrowserTabState(
+        string Location,
+        ObservableCollection<BrowserItem> Items,
+        IReadOnlyList<BrowserBreadcrumb> Breadcrumbs,
+        IReadOnlyList<string> History,
+        int HistoryIndex,
+        BrowserItem? SelectedItem);
+
     public void Dispose()
     {
+        _nasNavigationRetryTimer.Stop();
+        _nasNavigationRetryTimer.Tick -= NasNavigationRetryTimer_Tick;
         foreach (var tab in SearchTabs)
         {
             tab.Dispose();
@@ -1923,8 +2423,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             icon.Dispose();
         }
+        _recycleBinIcon?.Dispose();
         _iconCache.Clear();
-        BrowserItems.CollectionChanged -= BrowserItemsCollectionChanged;
+        _browserItems.CollectionChanged -= BrowserItemsCollectionChanged;
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)

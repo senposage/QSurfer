@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO.Enumeration;
 using System.Runtime.InteropServices;
 using System.ComponentModel;
 
@@ -9,6 +10,14 @@ public sealed class NasFileBrowser
     public Task<DirectoryReadResult> BrowseAsync(string folderPath, CancellationToken cancellationToken = default)
     {
         return Task.Run(() => Browse(folderPath, cancellationToken), cancellationToken);
+    }
+
+    public Task<DirectoryReadResult> BrowseRecycleBinAsync(
+        string folderPath,
+        Action<IReadOnlyList<BrowserItem>>? batchReceived = null,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() => BrowseRecycleBin(folderPath, batchReceived, cancellationToken), cancellationToken);
     }
 
     public Task CreateFolderAsync(string parentPath, string folderName, CancellationToken cancellationToken = default)
@@ -113,6 +122,71 @@ public sealed class NasFileBrowser
         }, cancellationToken);
     }
 
+    public Task<RecycleRestoreOutcome> RestoreFromRecycleAsync(
+        IEnumerable<BrowserItem> items,
+        bool replaceExistingFiles,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            var restoreItems = GetRecycleRestoreTargets(items);
+            if (restoreItems.Count == 0)
+            {
+                throw new InvalidOperationException("Select an item inside a QNAP Recycle Bin to restore it.");
+            }
+
+            foreach (var restore in restoreItems)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var destinationParent = Path.GetDirectoryName(restore.DestinationPath);
+                if (string.IsNullOrWhiteSpace(destinationParent))
+                {
+                    throw new IOException($"QSurfer could not determine the original location for {restore.Item.Name}.");
+                }
+
+                Directory.CreateDirectory(destinationParent);
+                if (restore.Item.IsFolder)
+                {
+                    if (File.Exists(restore.DestinationPath) || Directory.Exists(restore.DestinationPath))
+                    {
+                        throw new IOException($"A live item already exists at {restore.DestinationPath}. Folder restores do not replace existing items.");
+                    }
+
+                    Directory.Move(restore.Item.FullPath, restore.DestinationPath);
+                    continue;
+                }
+
+                if (Directory.Exists(restore.DestinationPath))
+                {
+                    throw new IOException($"The original location is now a folder: {restore.DestinationPath}");
+                }
+
+                if (File.Exists(restore.DestinationPath))
+                {
+                    if (!replaceExistingFiles)
+                    {
+                        throw new IOException($"A live file already exists at {restore.DestinationPath}.");
+                    }
+
+                    var backupPath = FindAvailableDestination(destinationParent, SafetyCopyFileName(restore.Item.Name), isFolder: false);
+                    File.Move(restore.DestinationPath, backupPath);
+                    MarkReadOnlyAndHidden(backupPath);
+                }
+
+                File.Move(restore.Item.FullPath, restore.DestinationPath);
+            }
+
+            return new RecycleRestoreOutcome(restoreItems.Count);
+        }, cancellationToken);
+    }
+
+    public static IReadOnlyList<RecycleRestoreTarget> GetRecycleRestoreTargets(IEnumerable<BrowserItem> items) => items
+        .DistinctBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase)
+        .Select(item => TryGetRecycleRestoreTarget(item, out var target) ? new RecycleRestoreTarget(item, target) : null)
+        .Where(target => target != null)
+        .Cast<RecycleRestoreTarget>()
+        .ToList();
+
     public Task<string> CreateShortcutAsync(BrowserItem item, string destinationFolder, CancellationToken cancellationToken = default)
     {
         return Task.Run(() =>
@@ -149,10 +223,12 @@ public sealed class NasFileBrowser
             throw new PlatformNotSupportedException("The Windows Properties sheet is only available on Windows.");
         }
 
-        var result = ShellExecuteW(IntPtr.Zero, "properties", item.FullPath, null, null, ShowNormal);
-        if (result.ToInt64() <= 32)
+        if (!SHObjectProperties(IntPtr.Zero, ShopFilePath, item.FullPath, null))
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows could not open Properties for the selected item.");
+            var error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error, error == 0
+                ? "Windows could not open Properties for the selected item."
+                : "Windows could not open Properties for the selected item.");
         }
     }
 
@@ -222,6 +298,111 @@ public sealed class NasFileBrowser
         return new DirectoryReadResult(normalized, ordered, skipped);
     }
 
+    private static DirectoryReadResult BrowseRecycleBin(
+        string folderPath,
+        Action<IReadOnlyList<BrowserItem>>? batchReceived,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizeFolder(folderPath);
+        if (!Directory.Exists(normalized))
+        {
+            throw new DirectoryNotFoundException($"The network folder could not be found: {normalized}");
+        }
+
+        var items = new List<BrowserItem>();
+        var batch = new List<BrowserItem>(25);
+        var pendingFolders = new Stack<string>();
+        var skipped = 0;
+        pendingFolders.Push(normalized);
+        while (pendingFolders.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = pendingFolders.Pop();
+            try
+            {
+                foreach (var entry in EnumerateRecycleEntries(current))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        if (entry.IsFolder)
+                        {
+                            pendingFolders.Push(entry.FullPath);
+                        }
+                        else
+                        {
+                            var item = new BrowserItem(entry.Name, entry.FullPath, false, entry.Size, entry.Modified)
+                            {
+                                Deleted = entry.Created,
+                            };
+                            item = item with
+                            {
+                                DisplayPath = TryGetRecycleRestoreTarget(item, out var destinationPath)
+                                    ? Path.GetDirectoryName(destinationPath) ?? destinationPath
+                                    : item.DisplayPath,
+                            };
+                            items.Add(item);
+                            batch.Add(item);
+                            if (batch.Count == 25)
+                            {
+                                batchReceived?.Invoke(batch.ToArray());
+                                batch.Clear();
+                            }
+                        }
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        skipped++;
+                    }
+                    catch (IOException)
+                    {
+                        skipped++;
+                    }
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                skipped++;
+            }
+            catch (IOException)
+            {
+                skipped++;
+            }
+        }
+
+        if (batch.Count > 0)
+        {
+            batchReceived?.Invoke(batch.ToArray());
+        }
+
+        var ordered = items
+            .OrderByDescending(item => item.DisplayDate)
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return new DirectoryReadResult(normalized, ordered, skipped);
+    }
+
+    private static IEnumerable<RecycleScanEntry> EnumerateRecycleEntries(string folderPath)
+    {
+        var options = new EnumerationOptions
+        {
+            AttributesToSkip = 0,
+            IgnoreInaccessible = false,
+            RecurseSubdirectories = false,
+            ReturnSpecialDirectories = false,
+        };
+        return new FileSystemEnumerable<RecycleScanEntry>(
+            folderPath,
+            static (ref FileSystemEntry entry) => new RecycleScanEntry(
+                entry.FileName.ToString(),
+                entry.ToFullPath(),
+                entry.Attributes.HasFlag(FileAttributes.Directory),
+                entry.Length,
+                entry.CreationTimeUtc.LocalDateTime,
+                entry.LastWriteTimeUtc.LocalDateTime),
+            options);
+    }
+
     private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(destination);
@@ -257,6 +438,55 @@ public sealed class NasFileBrowser
         }
     }
 
+    private static bool TryGetRecycleRestoreTarget(BrowserItem item, out string destinationPath)
+    {
+        var path = item.FullPath.Replace('/', '\\').TrimEnd('\\');
+        var parts = path.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        var recycleIndex = Array.FindIndex(parts, part =>
+            part.Equals("@Recycle", StringComparison.OrdinalIgnoreCase) ||
+            part.Equals("@RecycleBin", StringComparison.OrdinalIgnoreCase) ||
+            part.Equals("#recycle", StringComparison.OrdinalIgnoreCase));
+        if (recycleIndex < 1 || recycleIndex >= parts.Length - 1)
+        {
+            destinationPath = "";
+            return false;
+        }
+
+        var originalParts = parts[(recycleIndex + 1)..];
+        if (originalParts.Any(part => part is "." or ".."))
+        {
+            destinationPath = "";
+            return false;
+        }
+
+        var originalRoot = path.StartsWith(@"\\", StringComparison.Ordinal)
+            ? @"\\" + string.Join("\\", parts[..recycleIndex])
+            : Path.GetPathRoot(path) ?? "";
+        if (string.IsNullOrWhiteSpace(originalRoot))
+        {
+            destinationPath = "";
+            return false;
+        }
+
+        destinationPath = Path.Combine(originalRoot, Path.Combine(originalParts));
+        return true;
+    }
+
+    private static string SafetyCopyFileName(string fileName) =>
+        Path.GetFileNameWithoutExtension(fileName) + ".qsurfer" + Path.GetExtension(fileName);
+
+    private static void MarkReadOnlyAndHidden(string path)
+    {
+        try
+        {
+            File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.Hidden | FileAttributes.ReadOnly);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLogger.Warn("browse", $"could not mark recycle safety copy hidden and read-only path=\"{path}\" reason=\"{ex.Message}\"");
+        }
+    }
+
     private static BrowserItem CreateItem(string fullPath)
     {
         var attributes = File.GetAttributes(fullPath);
@@ -265,11 +495,28 @@ public sealed class NasFileBrowser
         if (isFolder)
         {
             var directory = new DirectoryInfo(fullPath);
-            return new BrowserItem(name, fullPath, true, 0, directory.LastWriteTime);
+            return new BrowserItem(name, fullPath, true, 0, ReadLastWriteTime(directory));
         }
 
         var file = new FileInfo(fullPath);
-        return new BrowserItem(name, fullPath, false, file.Length, file.LastWriteTime);
+        return new BrowserItem(name, fullPath, false, file.Length, ReadLastWriteTime(file));
+    }
+
+    private static DateTime ReadLastWriteTime(FileSystemInfo item)
+    {
+        try
+        {
+            var timestamp = item.LastWriteTime;
+            return timestamp is { Year: >= 1601 and <= 9999 } ? timestamp : DateTime.MinValue;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return DateTime.MinValue;
+        }
+        catch (IOException)
+        {
+            return DateTime.MinValue;
+        }
     }
 
     private static string NormalizeFolder(string folderPath)
@@ -390,7 +637,7 @@ public sealed class NasFileBrowser
     [DllImport("Netapi32.dll")]
     private static extern int NetApiBufferFree(IntPtr buffer);
 
-    private const int ShowNormal = 1;
+    private const uint ShopFilePath = 0x00000002;
     private const int FileOperationDelete = 3;
     private const ushort FileOperationNoConfirmation = 0x0010;
     private const ushort FileOperationNoErrorUi = 0x0400;
@@ -412,16 +659,49 @@ public sealed class NasFileBrowser
     private static extern int SHFileOperationW(ref ShellFileOperation operation);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr ShellExecuteW(IntPtr hwnd, string operation, string file, string? parameters, string? directory, int showCommand);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SHObjectProperties(IntPtr hwnd, uint objectType, string objectName, string? propertyName);
 }
 
 public sealed record DirectoryReadResult(string FolderPath, IReadOnlyList<BrowserItem> Items, int SkippedCount);
 
-public sealed record BrowserItem(string Name, string FullPath, bool IsFolder, long Size, DateTime Modified)
+internal readonly record struct RecycleScanEntry(
+    string Name,
+    string FullPath,
+    bool IsFolder,
+    long Size,
+    DateTime Created,
+    DateTime Modified);
+
+public sealed record RecycleRestoreTarget(BrowserItem Item, string DestinationPath);
+public sealed record RecycleRestoreOutcome(int RestoredCount);
+
+public sealed record BrowserItem(string Name, string FullPath, bool IsFolder, long Size, DateTime Modified, string DisplayPath = "") : INotifyPropertyChanged
 {
+    private object? _iconSource;
+
+    public DateTime? Deleted { get; init; }
+    public DateTime DisplayDate => Deleted ?? Modified;
+
     public string Glyph => IsFolder ? "\uE8B7" : "\uE8A5";
+    public object? IconSource
+    {
+        get => _iconSource;
+        set
+        {
+            if (ReferenceEquals(_iconSource, value))
+            {
+                return;
+            }
+
+            _iconSource = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IconSource)));
+        }
+    }
     public string Kind => IsFolder ? "Folder" : string.IsNullOrWhiteSpace(Path.GetExtension(Name)) ? "File" : Path.GetExtension(Name).TrimStart('.').ToUpperInvariant() + " File";
     public string SizeText => IsFolder ? "" : Size >= 1_048_576
         ? string.Format(CultureInfo.CurrentCulture, "{0:N1} MB", Size / 1_048_576d)
         : string.Format(CultureInfo.CurrentCulture, "{0:N0} KB", Math.Max(1, Size / 1024d));
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }

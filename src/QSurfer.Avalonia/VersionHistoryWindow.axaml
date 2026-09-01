@@ -1,0 +1,58 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="QSurfer.Avalonia.VersionHistoryWindow"
+        Title="Version history"
+        Width="900"
+        Height="620"
+        MinWidth="680"
+        MinHeight="440"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,Auto,*,Auto">
+    <Border Classes="app-header">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Version history" Classes="app-title" />
+        <TextBlock x:Name="ItemNameText" Classes="preview-title" />
+        <TextBlock x:Name="SourcePathText" Classes="preview-path" />
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="1" Classes="browser-command-bar">
+      <TextBlock x:Name="StatusText" Text="Loading accessible snapshots..." Classes="field-label" />
+    </Border>
+
+    <Grid Grid.Row="2">
+        <DataGrid x:Name="VersionsGrid"
+                ItemsSource="{Binding Versions}"
+                AutoGenerateColumns="False"
+                IsReadOnly="True"
+                SelectionMode="Single"
+                CanUserResizeColumns="True"
+                SelectionChanged="VersionsGrid_SelectionChanged"
+                DoubleTapped="VersionsGrid_DoubleTapped">
+        <DataGrid.Columns>
+          <DataGridTextColumn Header="Snapshot" Binding="{Binding SnapshotText}" Width="200" />
+          <DataGridTextColumn Header="Modified" Binding="{Binding ModifiedText}" Width="170" />
+          <DataGridTextColumn Header="Type" Binding="{Binding TypeText}" Width="100" />
+          <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="100" />
+        </DataGrid.Columns>
+      </DataGrid>
+      <Border x:Name="EmptyState" Classes="empty-state" IsVisible="False">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" MaxWidth="500">
+          <TextBlock Text="No earlier version found" Classes="empty-title" HorizontalAlignment="Center" />
+          <TextBlock Text="The selected item is not available in the accessible QNAP snapshots." Classes="empty-copy" TextWrapping="Wrap" TextAlignment="Center" />
+        </StackPanel>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="3" Classes="statusbar">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10">
+        <TextBlock x:Name="RecoveryNoteText" Text="Snapshots are read-only. Recovery always creates a separate copy." Classes="field-label" VerticalAlignment="Center" TextWrapping="Wrap" />
+        <Button Grid.Column="1" Content="Open version" x:Name="OpenButton" IsEnabled="False" Click="Open_Click" />
+        <Button Grid.Column="2" Content="Show location" x:Name="ShowButton" IsEnabled="False" Click="Show_Click" />
+        <Button Grid.Column="3" Content="Recover copy" x:Name="RecoverButton" Classes="primary" IsEnabled="False" Click="Recover_Click" />
+        <Button Grid.Column="4" Content="Restore original" x:Name="RestoreButton" IsEnabled="False" Click="RestoreOriginal_Click" ToolTip.Tip="Replace the current item with this snapshot" />
+        <Button Grid.Column="5" Content="Close" Click="Close_Click" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
