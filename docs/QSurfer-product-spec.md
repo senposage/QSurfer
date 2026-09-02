@@ -198,3 +198,8 @@ performance behavior, and corresponding menu/keyboard actions are present.
   search, browsing, path resolution, favorites, themes, and unsupported-preview
   behavior on Linux. Keep Windows shell integrations as platform-specific
   enhancements with clear Linux fallbacks.
+- **Help and project links:** refresh the in-app help documentation and ensure
+  every GitHub link points to the QSurfer repository.
+- **Sorting correctness:** make each sort selection take effect immediately and
+  apply it consistently to folders as well as files whenever that sort mode has
+  meaningful folder data.
