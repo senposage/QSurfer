@@ -23,12 +23,6 @@ UNC paths.
 
 ![QSurfer dark theme](docs/screenshots/qsurfer-dark.png)
 
-### Browsing shared folders
-
-![QSurfer light browser](docs/screenshots/qsurfer-light-browser.png)
-
-![QSurfer dark browser](docs/screenshots/qsurfer-dark-browser.png)
-
 ## Build
 
 Requirements: .NET SDK 9 or later on Windows.
