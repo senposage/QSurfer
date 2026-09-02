@@ -209,7 +209,7 @@
                         <TextBlock x:Name="ScopeFilterLabel" Grid.Row="1" Grid.Column="0" Text="Scope" Classes="field-label" VerticalAlignment="Center" />
                         <ComboBox x:Name="ScopeFilter" Grid.Row="1" Grid.Column="1" Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" />
                         <TextBlock x:Name="ArrangeFilterLabel" Grid.Row="1" Grid.Column="2" Text="Arrange" Classes="field-label" VerticalAlignment="Center" />
-                        <ComboBox x:Name="ArrangeFilter" Grid.Row="1" Grid.Column="3" Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode}" />
+                        <ComboBox x:Name="ArrangeFilter" Grid.Row="1" Grid.Column="3" Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode, Mode=TwoWay}" SelectionChanged="ArrangeFilter_SelectionChanged" />
                         <TextBlock x:Name="ViewFilterLabel" Grid.Row="1" Grid.Column="4" Text="View" Classes="field-label" VerticalAlignment="Center" />
                         <ComboBox x:Name="ViewFilter" Grid.Row="1" Grid.Column="5" Width="130" ItemsSource="{Binding ViewModes}" SelectedItem="{Binding SelectedViewMode}" />
                         <Button x:Name="LoadMoreButton" Grid.Row="1" Grid.Column="6" Content="Load more" Classes="panel-action" Command="{Binding LoadMoreCommand}" />

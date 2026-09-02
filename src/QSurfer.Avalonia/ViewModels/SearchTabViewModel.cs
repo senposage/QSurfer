@@ -542,6 +542,8 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         ApplyFilters();
     }
 
+    public void RefreshVisibleResults(bool forceRepaint = false) => ApplyFilters(forceRepaint);
+
     public void Dispose()
     {
         CancelSearch();
@@ -578,7 +580,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(SelectedDatePreset));
     }
 
-    private void ApplyFilters()
+    private void ApplyFilters(bool forceRepaint = false)
     {
         if (_allResults.Count == 0 && Results.Count == 0)
         {
@@ -587,7 +589,21 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         }
 
         var ordered = Sort(_allResults.Where(MatchesFilters)).ToList();
-        SynchronizeVisibleResults(ordered);
+        if (forceRepaint)
+        {
+            // A user-selected arrangement is infrequent. Resetting the collection here
+            // makes Avalonia redraw immediately, unlike incremental moves during a
+            // streaming search where preserving the scroll position is more important.
+            Results.Clear();
+            foreach (var result in ordered)
+            {
+                Results.Add(result);
+            }
+        }
+        else
+        {
+            SynchronizeVisibleResults(ordered);
+        }
         OnPropertyChanged(nameof(TypeFilterSummary));
     }
 
@@ -676,13 +692,57 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
 
     private IEnumerable<SearchResult> Sort(IEnumerable<SearchResult> source)
     {
-        IOrderedEnumerable<SearchResult> ordered = source.OrderBy(result => result.IsFolder ? 0 : 1);
-        foreach (var rule in _sortRules)
+        var rules = _sortRules.Count == 0
+            ? [new SortRule("folder", false)]
+            : _sortRules;
+
+        // Folder groups is deliberately Explorer-like: folders are surfaced first.
+        // Every other arrangement sorts folders and files together by the selected
+        // property, so the default grouping cannot mask an explicit sort choice.
+        IOrderedEnumerable<SearchResult> ordered;
+        var firstRuleIndex = 0;
+        if (rules[0].Key.Equals("folder", StringComparison.OrdinalIgnoreCase))
         {
-            ordered = ApplySortRule(ordered, rule);
+            ordered = source
+                .OrderBy(result => result.IsFolder ? 0 : 1)
+                // Folder names remain alphabetical. Files use newest first, then
+                // fall back to their filename where dates are equal or unavailable.
+                .ThenBy(result => result.IsFolder ? result.FileName : "", StringComparer.CurrentCultureIgnoreCase)
+                .ThenByDescending(result => result.IsFolder ? DateTime.MinValue : result.ModifiedDate ?? DateTime.MinValue);
+            firstRuleIndex = 1;
+        }
+        else
+        {
+            ordered = OrderBySortRule(source, rules[0]);
+            firstRuleIndex = 1;
+        }
+
+        for (var index = firstRuleIndex; index < rules.Count; index++)
+        {
+            ordered = ApplySortRule(ordered, rules[index]);
         }
         return ordered.ThenBy(result => result.FileName, StringComparer.CurrentCultureIgnoreCase);
     }
+
+    private static IOrderedEnumerable<SearchResult> OrderBySortRule(IEnumerable<SearchResult> source, SortRule rule) =>
+        rule.Key.ToLowerInvariant() switch
+        {
+            "name" => rule.Descending
+                ? source.OrderByDescending(result => result.FileName, StringComparer.CurrentCultureIgnoreCase)
+                : source.OrderBy(result => result.FileName, StringComparer.CurrentCultureIgnoreCase),
+            "modified" or "recent" => rule.Descending
+                ? source.OrderByDescending(result => result.ModifiedDate ?? DateTime.MinValue)
+                : source.OrderBy(result => result.ModifiedDate ?? DateTime.MinValue),
+            "type" => rule.Descending
+                ? source.OrderByDescending(result => result.Kind, StringComparer.CurrentCultureIgnoreCase)
+                : source.OrderBy(result => result.Kind, StringComparer.CurrentCultureIgnoreCase),
+            "size" => rule.Descending
+                ? source.OrderByDescending(result => result.Size)
+                : source.OrderBy(result => result.Size),
+            _ => rule.Descending
+                ? source.OrderByDescending(result => result.DisplayPath, StringComparer.CurrentCultureIgnoreCase)
+                : source.OrderBy(result => result.DisplayPath, StringComparer.CurrentCultureIgnoreCase),
+        };
 
     private static IOrderedEnumerable<SearchResult> ApplySortRule(IOrderedEnumerable<SearchResult> source, SortRule rule) =>
         rule.Key.ToLowerInvariant() switch

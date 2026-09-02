@@ -1,5 +1,6 @@
 using System.IO;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using Avalonia;
@@ -26,6 +27,7 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
     private static readonly ConcurrentDictionary<string, PreviewHandlerRegistration> PreviewHandlerCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _path;
     private readonly Guid _handlerClassId;
+    private readonly Stopwatch _startupStopwatch = Stopwatch.StartNew();
     private IPreviewHandler? _handler;
     private IStream? _stream;
     private IShellItem? _shellItem;
@@ -47,6 +49,14 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
 
     public static ShellPreviewHost? TryCreate(string path)
     {
+        var handlerClassId = TryResolveHandlerClassId(path);
+        return handlerClassId is { } value ? Create(path, value) : null;
+    }
+
+    // This lookup does not create an Avalonia control, so callers may safely run it
+    // away from the UI thread while a search is painting results.
+    public static Guid? TryResolveHandlerClassId(string path)
+    {
         if (!File.Exists(path))
         {
             return null;
@@ -60,8 +70,10 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
 
         var extensionKey = extension.StartsWith('.') ? extension : "." + extension;
         var registration = PreviewHandlerCache.GetOrAdd(extensionKey, static key => FindPreviewHandler(key));
-        return registration.IsAvailable ? new ShellPreviewHost(path, registration.ClassId) : null;
+        return registration.IsAvailable ? registration.ClassId : null;
     }
+
+    public static ShellPreviewHost Create(string path, Guid handlerClassId) => new(path, handlerClassId);
 
     protected override IPlatformHandle CreateNativeControlCore(IPlatformHandle parent)
     {
@@ -142,7 +154,7 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
         {
             throw new InvalidOperationException("The registered preview handler does not support file initialization.");
         }
-        AppLogger.Info("preview", $"native handler initialized mode={initializationMode} path=\"{_path}\" handler=\"{_handlerClassId}\"");
+        AppLogger.Info("preview", $"native handler initialized mode={initializationMode} path=\"{_path}\" handler=\"{_handlerClassId}\" elapsed={_startupStopwatch.ElapsedMilliseconds}ms");
     }
 
     private void UpdatePreviewSize(Size size)
@@ -166,7 +178,7 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
                 _handler.SetRect(ref rect);
                 _handler.DoPreview();
                 _previewStarted = true;
-                AppLogger.Info("preview", $"native handler started path=\"{_path}\" size={rect.Right}x{rect.Bottom}");
+                AppLogger.Info("preview", $"native handler started path=\"{_path}\" size={rect.Right}x{rect.Bottom} elapsed={_startupStopwatch.ElapsedMilliseconds}ms");
             }
             else
             {

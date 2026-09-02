@@ -17,7 +17,7 @@ public sealed partial class HelpWindow : Window
         var launcher = GetTopLevel(this)?.Launcher;
         if (launcher != null)
         {
-            await launcher.LaunchUriAsync(new Uri("https://github.com/senposage/qsirch-gui/tree/avalonia"));
+            await launcher.LaunchUriAsync(new Uri("https://github.com/senposage/QSurfer"));
         }
     }
 

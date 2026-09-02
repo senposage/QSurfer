@@ -70,7 +70,7 @@ public sealed class NasFileBrowser
             var result = SHFileOperationW(ref operation);
             if (result != 0)
             {
-                throw new Win32Exception(result, "Windows could not delete the selected item.");
+                throw new Win32Exception(result, DescribeDeleteFailure(result));
             }
             if (operation.Aborted)
             {
@@ -78,6 +78,14 @@ public sealed class NasFileBrowser
             }
         }, cancellationToken);
     }
+
+    private static string DescribeDeleteFailure(int errorCode) => errorCode switch
+    {
+        32 => "The item is open or being used by another program. Close it and try again.",
+        5 => "You do not have permission to delete the selected item.",
+        2 or 3 => "The item is no longer available at this location.",
+        _ => "Windows could not delete the selected item.",
+    };
 
     public Task<int> CopyAsync(IEnumerable<BrowserItem> items, string destinationFolder, bool move, CancellationToken cancellationToken = default)
     {

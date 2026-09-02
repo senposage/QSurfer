@@ -328,12 +328,27 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        IsFavoritesVisible = true;
-        IsNavigationVisible = true;
-        BrowserLocation = _mapper.ResolveBrowserPath(node.FullPath);
-        await BrowseAsync();
-        await LoadNavigationChildrenAsync(node);
-        node.IsExpanded = true;
+        try
+        {
+            var resolvedPath = _mapper.ResolveBrowserPath(node.FullPath);
+            AppLogger.Info("browse", $"navigation requested folder=\"{node.FullPath}\" resolved=\"{resolvedPath}\"");
+
+            IsFavoritesVisible = true;
+            IsNavigationVisible = true;
+            BrowserLocation = resolvedPath;
+            await BrowseAsync();
+            await LoadNavigationChildrenAsync(node);
+            node.IsExpanded = true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("browse", ex, $"navigation failed folder=\"{node.FullPath}\"");
+            Status = $"Could not open {NavigationTreeDisplayName(node.FullPath)}";
+            if (SelectedSearchTab is { } tab)
+            {
+                tab.Status = Status;
+            }
+        }
     }
 
     public async Task NavigateToBreadcrumbAsync(BrowserBreadcrumb breadcrumb)
@@ -410,7 +425,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             }
             else
             {
-                node.ChildrenLoaded = true;
+                // Network drives can appear late or briefly disconnect. Keep the node
+                // retryable rather than leaving it permanently empty after one failed read.
+                node.ChildrenLoaded = false;
+                node.EnsurePlaceholder();
             }
             AppLogger.Warn("browse", $"navigation tree unavailable folder=\"{node.FullPath}\" reason=\"{ex.Message}\"");
         }
@@ -1563,7 +1581,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        var location = _mapper.ResolveBrowserPath(BrowserLocation.Trim());
+        var location = _mapper.ResolveBrowserPath((BrowserLocation ?? "").Trim());
         if (string.IsNullOrWhiteSpace(location))
         {
             return;
@@ -1863,8 +1881,17 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(ShowNasNavigationStatus));
     }
 
+    private List<string> NavigationExpandedPaths
+    {
+        get
+        {
+            _config.Behavior ??= new BehaviorConfig();
+            return _config.Behavior.NavigationExpandedPaths ??= [];
+        }
+    }
+
     private bool ShouldRestoreExpanded(string path) =>
-        _config.Behavior.NavigationExpandedPaths.Any(saved => saved.Equals(path, StringComparison.OrdinalIgnoreCase));
+        NavigationExpandedPaths.Any(saved => string.Equals(saved, path, StringComparison.OrdinalIgnoreCase));
 
     private void RecordNavigationExpansion(NavigationTreeNode node)
     {
@@ -1873,10 +1900,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        _config.Behavior.NavigationExpandedPaths.RemoveAll(path => path.Equals(node.FullPath, StringComparison.OrdinalIgnoreCase));
+        var expandedPaths = NavigationExpandedPaths;
+        expandedPaths.RemoveAll(path => string.Equals(path, node.FullPath, StringComparison.OrdinalIgnoreCase));
         if (node.IsExpanded)
         {
-            _config.Behavior.NavigationExpandedPaths.Add(node.FullPath);
+            expandedPaths.Add(node.FullPath);
         }
     }
 

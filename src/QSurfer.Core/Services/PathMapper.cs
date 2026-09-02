@@ -461,7 +461,8 @@ public sealed class PathMapper(AppConfig config)
 
     // Nested drive mappings must beat their parent share. For example, an S: mapping
     // for Shared\\Scans should win over X: mapped to the broader Shared root.
-    private IEnumerable<PathMapping> OrderedPathMappings() => config.PathMappings
+    private IEnumerable<PathMapping> OrderedPathMappings() => (config.PathMappings ?? [])
+        .Where(mapping => mapping != null && IsValidManualMapping(mapping, out _))
         .OrderByDescending(mapping => CandidateMappingPrefixes(mapping.ShareRoot)
             .Select(prefix => prefix.Length)
             .DefaultIfEmpty(0)

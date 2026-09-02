@@ -203,3 +203,7 @@ performance behavior, and corresponding menu/keyboard actions are present.
 - **Sorting correctness:** make each sort selection take effect immediately and
   apply it consistently to folders as well as files whenever that sort mode has
   meaningful folder data.
+- **Per-user portable configuration:** split user-specific settings into
+  separate JSON files under QSurfer's program directory, while retaining shared
+  NAS connection defaults independently. Do not import or probe PyQsirch
+  configuration files.

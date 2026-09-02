@@ -12,32 +12,9 @@ public static class ConfigStore
         WriteIndented = true,
     };
 
-    public static string ConfigPath
-    {
-        get
-        {
-            var packageConfig = Path.Combine(AppContext.BaseDirectory, "config", "config.json");
-            if (File.Exists(packageConfig))
-            {
-                return packageConfig;
-            }
-
-            var legacyPackageConfig = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "config", "config.json"));
-            if (File.Exists(legacyPackageConfig))
-            {
-                return legacyPackageConfig;
-            }
-
-            var appConfig = Path.Combine(AppContext.BaseDirectory, "config.json");
-            if (File.Exists(appConfig))
-            {
-                return appConfig;
-            }
-
-            var repoConfig = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "config.json"));
-            return File.Exists(repoConfig) ? repoConfig : appConfig;
-        }
-    }
+    // QSurfer owns one portable configuration beside its executable. Do not probe
+    // parent folders or other applications' config files for legacy settings.
+    public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "config", "config.json");
 
     public static string PortableRoot
     {

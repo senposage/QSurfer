@@ -5,10 +5,13 @@ using Avalonia.Layout;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using System.Diagnostics;
 using QSurfer.Core.Models;
 using QSurfer.Core.Services;
 using QSurfer.Avalonia.Services;
@@ -25,6 +28,8 @@ public sealed partial class MainWindow : Window
     private bool _exitRequested;
     private CancellationTokenSource? _previewCancellation;
     private ShellPreviewHost? _nativePreviewHost;
+    private Bitmap? _imagePreview;
+    private string? _activePreviewKey;
     private IReadOnlyList<SearchResult> _contextResults = [];
     private DataGrid? _contextResultsGrid;
     private bool _controlKeyDown;
@@ -424,9 +429,39 @@ public sealed partial class MainWindow : Window
 
     private async void SearchResultSelected(object? sender, SelectionChangedEventArgs e)
     {
-        if (sender is Control { DataContext: SearchTabViewModel tab } && tab.SelectedResult is { } result)
+        if (e.AddedItems.OfType<SearchResult>().LastOrDefault() is { } result)
         {
             await RequestNativePreviewAsync(result);
+        }
+    }
+
+    private void ArrangeFilter_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox { DataContext: SearchTabViewModel tab } ||
+            e.AddedItems.OfType<ResultSortMode>().LastOrDefault() is not { } mode)
+        {
+            return;
+        }
+
+        tab.SelectedSortMode = mode;
+        ClearDetailsGridSorts();
+        AppLogger.Info("sort", $"arrange selected tab=\"{tab.Title}\" mode=\"{mode.Key}\" visible={tab.Results.Count}");
+        // Selection bindings are normally two-way, but this explicit collection reset
+        // guarantees that a user choice immediately redraws the visible rows.
+        tab.RefreshVisibleResults(forceRepaint: true);
+    }
+
+    private void ClearDetailsGridSorts()
+    {
+        var grid = FindDetailsGrid();
+        if (grid == null)
+        {
+            return;
+        }
+
+        foreach (var column in grid.Columns)
+        {
+            column.ClearSort();
         }
     }
 
@@ -469,7 +504,12 @@ public sealed partial class MainWindow : Window
         var item = e.AddedItems.OfType<BrowserItem>().LastOrDefault();
         if (item == null)
         {
-            ClearNativePreview();
+            // DataGrid can raise an empty selection event while it is reconciling a
+            // current row. Do not cancel the preview that was just requested for it.
+            if (_viewModel.SelectedBrowserItem == null)
+            {
+                ClearNativePreview();
+            }
             return;
         }
 
@@ -837,7 +877,16 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        await _viewModel.NavigateToFolderAsync(node);
+        try
+        {
+            await _viewModel.NavigateToFolderAsync(node);
+        }
+        catch (Exception ex)
+        {
+            // Async event handlers must not allow a transient mapped-drive failure to
+            // reach Avalonia's dispatcher as an unhandled application exception.
+            AppLogger.Error("browse", ex, $"navigation click failed folder=\"{node.FullPath}\"");
+        }
     }
 
     private static bool IsTreeExpander(object? source) =>
@@ -919,40 +968,100 @@ public sealed partial class MainWindow : Window
 
     private async Task RequestNativePreviewAsync(SearchResult result)
     {
+        var previewKey = GetPreviewKey(result);
+        if (string.Equals(_activePreviewKey, previewKey, StringComparison.OrdinalIgnoreCase) &&
+            (_previewCancellation != null || _nativePreviewHost != null || _imagePreview != null))
+        {
+            return;
+        }
+
         ClearNativePreview();
         if (!_viewModel.IsPreviewVisible || result.IsFolder || ShellPreviewHost.IsVideoFile(result.Extension))
         {
             return;
         }
 
-        var path = _viewModel.ResolveWindowsPath(result);
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
         var cancellation = new CancellationTokenSource();
+        var token = cancellation.Token;
         _previewCancellation = cancellation;
+        _activePreviewKey = previewKey;
+        var stopwatch = Stopwatch.StartNew();
+        AppLogger.Info("preview", $"request started result=\"{result.Name}\"");
+        // A mapped-drive probe can block briefly when SMB is busy. Keep that work and
+        // the handler lookup off the UI thread so search paint batches stay responsive.
         try
         {
-            await Task.Delay(PreviewSelectionDelayMilliseconds, cancellation.Token);
-            if (cancellation.IsCancellationRequested || !IsCurrentPreviewResult(result))
+            var path = await Task.Run(() => _viewModel.ResolveWindowsPath(result), token);
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                AppLogger.Warn("preview", $"request could not resolve path result=\"{result.Name}\" elapsed={stopwatch.ElapsedMilliseconds}ms");
+                return;
+            }
+
+            var previewPath = await PreviewFileStager.StageIfRemoteAsync(path, token);
+
+            await Task.Delay(PreviewSelectionDelayMilliseconds, token);
+            if (token.IsCancellationRequested || !IsCurrentPreviewResult(result))
             {
                 return;
             }
 
-            var host = ShellPreviewHost.TryCreate(path);
-            if (host == null)
+            if (IsImageFile(result.Extension))
+            {
+                var imagePreview = await Task.Run(() => new Bitmap(previewPath), token);
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (token.IsCancellationRequested || !IsCurrentPreviewResult(result))
+                    {
+                        imagePreview.Dispose();
+                        return;
+                    }
+
+                    _imagePreview = imagePreview;
+                    _viewModel.SetNativePreviewHost(new Image
+                    {
+                        Source = imagePreview,
+                        Stretch = Stretch.Uniform,
+                    });
+                    AppLogger.Info("preview", $"image preview attached result=\"{result.Name}\" elapsed={stopwatch.ElapsedMilliseconds}ms");
+                }, DispatcherPriority.Input);
+                return;
+            }
+
+            var handlerClassId = await Task.Run(() => ShellPreviewHost.TryResolveHandlerClassId(previewPath), token);
+            if (handlerClassId is not { } value)
             {
                 return;
             }
 
-            host.PreviewFailed += NativePreviewFailed;
-            _nativePreviewHost = host;
-            _viewModel.SetNativePreviewHost(host);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (token.IsCancellationRequested || !IsCurrentPreviewResult(result))
+                {
+                    return;
+                }
+
+                var host = ShellPreviewHost.Create(previewPath, value);
+                host.PreviewFailed += NativePreviewFailed;
+                _nativePreviewHost = host;
+                _viewModel.SetNativePreviewHost(host);
+                AppLogger.Info("preview", $"native preview attached result=\"{result.Name}\" elapsed={stopwatch.ElapsedMilliseconds}ms");
+            }, DispatcherPriority.Input);
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("preview", ex, $"preview preparation failed result=\"{result.Name}\"");
+        }
+        finally
+        {
+            if (ReferenceEquals(_previewCancellation, cancellation))
+            {
+                _previewCancellation = null;
+            }
+            cancellation.Dispose();
         }
     }
 
@@ -966,20 +1075,35 @@ public sealed partial class MainWindow : Window
         ReferenceEquals(_viewModel.SelectedFavoriteNode?.Result, result) ||
         string.Equals(_viewModel.SelectedBrowserItem?.FullPath, result.WindowsPath, StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsImageFile(string extension) => ImageExtensions.Contains(extension.Trim().TrimStart('.'));
+
+    private static string GetPreviewKey(SearchResult result) =>
+        string.IsNullOrWhiteSpace(result.WindowsPath)
+            ? result.DisplayPath
+            : result.WindowsPath;
+
     private void ClearNativePreview()
     {
         _previewCancellation?.Cancel();
-        _previewCancellation?.Dispose();
         _previewCancellation = null;
+        _activePreviewKey = null;
         var host = _nativePreviewHost;
         _nativePreviewHost = null;
         _viewModel.SetNativePreviewHost(null);
+        var imagePreview = _imagePreview;
+        _imagePreview = null;
+        imagePreview?.Dispose();
         if (host != null)
         {
             host.PreviewFailed -= NativePreviewFailed;
             host.Dispose();
         }
     }
+
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bmp", "gif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+    };
 
     private void NativePreviewFailed(object? sender, PreviewFailureEventArgs e)
     {
