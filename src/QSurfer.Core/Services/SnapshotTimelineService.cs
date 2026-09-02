@@ -392,37 +392,9 @@ public sealed class SnapshotTimelineService(AppConfig config)
 
     private static IReadOnlyList<MappedDrive> ReadMappedDrives()
     {
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo("net.exe", "use")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (process == null)
-            {
-                return [];
-            }
-
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(2000);
-            return output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
-                .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                .Select(parts => new
-                {
-                    Local = parts.FirstOrDefault(part => Regex.IsMatch(part, "^[A-Z]:$", RegexOptions.IgnoreCase)),
-                    Remote = parts.FirstOrDefault(part => part.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase)),
-                })
-                .Where(value => !string.IsNullOrWhiteSpace(value.Local) && !string.IsNullOrWhiteSpace(value.Remote))
-                .Select(value => new MappedDrive(value.Local + "\\", value.Remote!))
-                .ToList();
-        }
-        catch
-        {
-            return [];
-        }
+        return PathMapper.DiscoverWindowsDriveMappings()
+            .Select(mapping => new MappedDrive(mapping.DriveRoot, mapping.NetworkPath))
+            .ToList();
     }
 
     private sealed record SnapshotCandidate(string SnapshotRoot, string RelativePath);

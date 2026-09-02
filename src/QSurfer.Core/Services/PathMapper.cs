@@ -8,6 +8,9 @@ namespace QSurfer.Core.Services;
 public sealed class PathMapper(AppConfig config)
 {
     private static readonly object MappedDrivesGate = new();
+    private static readonly Regex NetUseDrivePattern = new(
+        @"\b(?<local>[A-Za-z]:)\s+(?<remote>\\\\.+?)\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static IReadOnlyList<MappedDrive> _mappedDrives = [];
     private static DateTime _mappedDrivesExpiresUtc = DateTime.MinValue;
     public string Resolve(SearchResult result)
@@ -101,6 +104,39 @@ public sealed class PathMapper(AppConfig config)
         var normalized = Normalize(path);
         if (string.IsNullOrWhiteSpace(normalized))
         {
+            return normalized;
+        }
+
+        // A full UNC path identifies an actual server share. Only an exact Windows
+        // drive mapping (or an explicitly UNC-based manual mapping) may replace it.
+        // Do not let a broad relative mapping turn \\nas\Destiny into X:\Destiny
+        // merely because X: points at another share on the same NAS.
+        if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+        {
+            var mappedPath = ResolveFromMappedDrives(normalized);
+            if (!string.IsNullOrWhiteSpace(mappedPath))
+            {
+                return mappedPath;
+            }
+
+            normalized = PreferMappedServerName(normalized);
+
+            foreach (var mapping in OrderedPathMappings())
+            {
+                var target = Normalize(mapping.MappedRoot).TrimEnd('\\');
+                var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
+                if (!source.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(target))
+                {
+                    continue;
+                }
+
+                if (TryResolveMappedRoot(normalized, source, target, out var resolved) && IsAvailablePathRoot(resolved))
+                {
+                    return resolved;
+                }
+            }
+
             return normalized;
         }
 
@@ -357,7 +393,7 @@ public sealed class PathMapper(AppConfig config)
             return null;
         }
 
-        return @"\\" + host + "\\" + string.Join("\\", segments);
+        return PreferMappedServerName(@"\\" + host + "\\" + string.Join("\\", segments));
     }
 
     private static string? ResolveFromMappedDrives(string qpath)
@@ -369,6 +405,11 @@ public sealed class PathMapper(AppConfig config)
             if (qpath.StartsWith(remote, StringComparison.OrdinalIgnoreCase))
             {
                 return CombineRoot(drive.LocalRoot, qpath[remote.Length..].TrimStart('\\'));
+            }
+
+            if (TryResolveEquivalentUncShare(qpath, remote, drive.LocalRoot, out var equivalentPath))
+            {
+                return equivalentPath;
             }
 
             var remoteParts = remote.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
@@ -391,6 +432,71 @@ public sealed class PathMapper(AppConfig config)
             }
         }
         return null;
+    }
+
+    private static bool TryResolveEquivalentUncShare(string path, string remote, string localRoot, out string resolved)
+    {
+        resolved = "";
+        if (!path.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase) ||
+            !remote.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var pathParts = path.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        var remoteParts = remote.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (pathParts.Length < 2 || remoteParts.Length < 2 ||
+            !SameWindowsServer(pathParts[0], remoteParts[0]) ||
+            !pathParts[1].Equals(remoteParts[1], StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        resolved = CombineRoot(localRoot, string.Join("\\", pathParts.Skip(2)));
+        return true;
+    }
+
+    private static bool SameWindowsServer(string first, string second)
+    {
+        if (first.Equals(second, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var firstShortName = first.Split('.', 2)[0];
+        var secondShortName = second.Split('.', 2)[0];
+        return firstShortName.Equals(secondShortName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string PreferMappedServerName(string path)
+    {
+        if (!path.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+        {
+            return path;
+        }
+
+        var pathParts = path.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (pathParts.Length < 2)
+        {
+            return path;
+        }
+
+        foreach (var drive in NetUseDrives())
+        {
+            var remoteParts = Normalize(drive.Remote).Trim('\\')
+                .Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            if (remoteParts.Length < 2 || !SameWindowsServer(pathParts[0], remoteParts[0]))
+            {
+                continue;
+            }
+
+            // Windows authenticates domain SMB sessions against the FQDN. Reuse the
+            // name from an existing mapped connection when the app was configured
+            // with a short NAS host name.
+            return @"\\" + remoteParts[0] + "\\" + string.Join("\\", pathParts.Skip(1));
+        }
+
+        return path;
     }
 
     private static string? ResolveUncFromMappedDrives(string qpath)
@@ -534,12 +640,14 @@ public sealed class PathMapper(AppConfig config)
             var drives = new List<MappedDrive>();
             foreach (var line in output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries))
             {
-                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var local = parts.FirstOrDefault(part => Regex.IsMatch(part, "^[A-Z]:$", RegexOptions.IgnoreCase));
-                var remote = parts.FirstOrDefault(part => part.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrWhiteSpace(local) && !string.IsNullOrWhiteSpace(remote))
+                // `net use` renders the remote path through the end of the line, so
+                // splitting on whitespace truncates shares such as "PC Law" to "PC".
+                var match = NetUseDrivePattern.Match(line);
+                if (match.Success)
                 {
-                    drives.Add(new MappedDrive(local + "\\", remote));
+                    drives.Add(new MappedDrive(
+                        match.Groups["local"].Value + "\\",
+                        match.Groups["remote"].Value.Trim()));
                 }
             }
             return drives;

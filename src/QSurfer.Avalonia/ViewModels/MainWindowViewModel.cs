@@ -1727,6 +1727,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             }
             NavigationRoots.Add(CreateNavigationNode(NavigationDisplayName(root), root));
         }
+
+        SortNavigationRoots();
     }
 
     private void RefreshNavigationRoots()
@@ -1785,14 +1787,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private string NavigationTreeDisplayName(string path)
     {
-        var name = NavigationDisplayName(path);
         var resolved = NormalizeNavigationRoot(_mapper.ResolveBrowserPath(path));
         if (IsDriveRoot(resolved) && !path.Equals(resolved, StringComparison.OrdinalIgnoreCase))
         {
-            return $"{name} ({resolved})";
+            return NavigationDisplayName(resolved);
         }
 
-        return name;
+        return NavigationDisplayName(path);
     }
 
     private void FlattenNasNavigationRoot(NavigationTreeNode root)
@@ -1833,6 +1834,37 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             NavigationRoots.Insert(insertionIndex + index, shares[index]);
         }
+
+        SortNavigationRoots();
+    }
+
+    private void SortNavigationRoots()
+    {
+        var ordered = NavigationRoots
+            .OrderBy(NavigationRootGroup)
+            .ThenBy(node => node.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (NavigationRoots.SequenceEqual(ordered))
+        {
+            return;
+        }
+
+        NavigationRoots.Clear();
+        foreach (var node in ordered)
+        {
+            NavigationRoots.Add(node);
+        }
+    }
+
+    private int NavigationRootGroup(NavigationTreeNode node)
+    {
+        if (LocalNavigationFolders().Any(folder =>
+                folder.Path.Equals(node.FullPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return 0;
+        }
+
+        return IsDriveRoot(NormalizeNavigationRoot(node.FullPath)) ? 1 : 2;
     }
 
     private NavigationTreeNode CreateNavigationNode(

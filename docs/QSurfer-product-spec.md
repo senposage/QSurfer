@@ -187,6 +187,9 @@ performance behavior, and corresponding menu/keyboard actions are present.
 - **Local search delegation:** searches rooted on `C:\` and standard local user
   folders should use Windows search and Explorer facilities rather than the
   NAS/Qsirch pipeline. NAS searches remain Qsirch-backed.
+- **Explorer path memory and autocomplete:** cache recently visited, valid
+  browse locations per user and offer Explorer-style address suggestions as
+  the user types, without probing unavailable NAS paths on every keystroke.
 - **Preview responsiveness:** reduce native preview-handler startup hesitation,
   preserve a warm host when safe, and make slow or unsupported handlers fail
   clearly without stalling the results workspace.
