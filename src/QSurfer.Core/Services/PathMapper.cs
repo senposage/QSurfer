@@ -109,7 +109,7 @@ public sealed class PathMapper(AppConfig config)
 
         // A full UNC path identifies an actual server share. Only an exact Windows
         // drive mapping (or an explicitly UNC-based manual mapping) may replace it.
-        // Do not let a broad relative mapping turn \\nas\Destiny into X:\Destiny
+        // Do not let a broad relative mapping turn \\nas\share2 into X:\Share2
         // merely because X: points at another share on the same NAS.
         if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
         {
