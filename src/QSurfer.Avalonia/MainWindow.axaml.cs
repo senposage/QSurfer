@@ -186,6 +186,10 @@ public sealed partial class MainWindow : Window
 
     internal void HideToTray()
     {
+        if (Application.Current is App app)
+        {
+            app.EnsureTrayIconForBehavior();
+        }
         Hide();
         AppLogger.Info("app", "main window hidden to tray");
     }

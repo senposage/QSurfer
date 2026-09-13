@@ -62,6 +62,11 @@ public sealed partial class App : Application
 
     private void CreateTrayIcon()
     {
+        if (_trayIcon != null || !ShouldCreateTrayIcon())
+        {
+            return;
+        }
+
         var showItem = new NativeMenuItem("Show QSurfer");
         showItem.Click += (_, _) => RestoreMainWindow();
         var exitItem = new NativeMenuItem("Exit");
@@ -77,6 +82,21 @@ public sealed partial class App : Application
             },
         };
         _trayIcon.Clicked += (_, _) => RestoreMainWindow();
+    }
+
+    internal void EnsureTrayIconForBehavior() => CreateTrayIcon();
+
+    private bool ShouldCreateTrayIcon()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        var behavior = _mainWindow?.Config.Behavior;
+        return behavior is { MinimizeToTray: true } ||
+               behavior is { ExitToTray: true } ||
+               behavior is { ShowInTaskbar: false };
     }
 
     private void ToggleMainWindow()

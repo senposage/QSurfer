@@ -23,8 +23,7 @@ public static class UserDataPaths
         if (!string.IsNullOrWhiteSpace(home))
         {
             var root = Path.Combine(home, ".qsurfer");
-            var legacyRoot = Path.Combine(home, ".local", "share", "QSurfer");
-            TryMigrateLegacyLinuxRoot(legacyRoot, root);
+            TryMigrateLegacyLinuxRoots(home, root);
             return root;
         }
 
@@ -32,25 +31,126 @@ public static class UserDataPaths
         return Path.Combine(string.IsNullOrWhiteSpace(fallbackLocalAppData) ? AppContext.BaseDirectory : fallbackLocalAppData, "QSurfer");
     }
 
-    private static void TryMigrateLegacyLinuxRoot(string legacyRoot, string root)
+    internal static IReadOnlyList<string> LegacyLinuxRoots()
     {
-        if (Directory.Exists(root) || !Directory.Exists(legacyRoot))
+        if (OperatingSystem.IsWindows())
         {
-            return;
+            return [];
         }
 
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrWhiteSpace(home) ? [] : FindLegacyLinuxRoots(home, Path.Combine(home, ".qsurfer"));
+    }
+
+    private static void TryMigrateLegacyLinuxRoots(string home, string root)
+    {
+        foreach (var legacyRoot in FindLegacyLinuxRoots(home, root))
+        {
+            TryMergeLegacyLinuxRoot(legacyRoot, root);
+        }
+    }
+
+    private static IReadOnlyList<string> FindLegacyLinuxRoots(string home, string root)
+    {
+        var roots = new HashSet<string>(StringComparer.Ordinal);
+        var localShare = Path.Combine(home, ".local", "share");
+
+        AddCandidate(Path.Combine(localShare, "QSurfer"));
+        AddCandidate(Path.Combine(localShare, "qsurfer"));
+        AddCaseVariants(localShare, "QSurfer");
+        AddCaseVariants(home, ".qsurfer");
+
+        return roots.ToList();
+
+        void AddCaseVariants(string parent, string expectedName)
+        {
+            try
+            {
+                if (!Directory.Exists(parent))
+                {
+                    return;
+                }
+
+                foreach (var candidate in Directory.EnumerateDirectories(parent))
+                {
+                    if (Path.GetFileName(candidate).Equals(expectedName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        AddCandidate(candidate);
+                    }
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        void AddCandidate(string candidate)
+        {
+            try
+            {
+                if (!Directory.Exists(candidate))
+                {
+                    return;
+                }
+
+                var fullPath = Path.GetFullPath(candidate);
+                if (!fullPath.Equals(Path.GetFullPath(root), StringComparison.Ordinal))
+                {
+                    roots.Add(fullPath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    private static void TryMergeLegacyLinuxRoot(string legacyRoot, string root)
+    {
         try
         {
-            Directory.Move(legacyRoot, root);
+            MergeMissingEntries(legacyRoot, root);
         }
         catch (IOException)
         {
             // A second QSurfer instance or filesystem policy can prevent a move.
-            // The new home-relative directory still works as a clean fallback.
         }
         catch (UnauthorizedAccessException)
         {
             // Keep startup resilient when a legacy directory is read-only.
+        }
+    }
+
+    private static void MergeMissingEntries(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+
+        foreach (var sourceDirectory in Directory.EnumerateDirectories(source).ToList())
+        {
+            var targetDirectory = Path.Combine(destination, Path.GetFileName(sourceDirectory));
+            if (!Directory.Exists(targetDirectory))
+            {
+                Directory.Move(sourceDirectory, targetDirectory);
+            }
+            else
+            {
+                MergeMissingEntries(sourceDirectory, targetDirectory);
+            }
+        }
+
+        foreach (var sourceFile in Directory.EnumerateFiles(source).ToList())
+        {
+            var targetFile = Path.Combine(destination, Path.GetFileName(sourceFile));
+            if (!File.Exists(targetFile))
+            {
+                File.Move(sourceFile, targetFile);
+            }
         }
     }
 }

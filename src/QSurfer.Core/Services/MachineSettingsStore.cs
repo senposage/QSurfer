@@ -48,6 +48,11 @@ public sealed class MachineSettingsStore
                 using var reader = command.ExecuteReader();
                 if (!reader.Read())
                 {
+                    reader.Close();
+                    if (TryImportLegacyLinuxSettings(connection))
+                    {
+                        return Load();
+                    }
                     AppLogger.Info("config", "no local SQLite settings found");
                     return null;
                 }
@@ -175,6 +180,80 @@ public sealed class MachineSettingsStore
         return connection;
     }
 
+    private static bool TryImportLegacyLinuxSettings(SqliteConnection destination)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        foreach (var legacyRoot in UserDataPaths.LegacyLinuxRoots())
+        {
+            var sourcePath = Path.Combine(legacyRoot, "settings", "settings.sqlite");
+            if (!File.Exists(sourcePath))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var source = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = sourcePath,
+                    Mode = SqliteOpenMode.ReadOnly,
+                }.ToString());
+                source.Open();
+                var hasPassword = HasColumn(source, "machine_settings", "password_protected");
+                var hasToken = HasColumn(source, "machine_settings", "search_service_token_protected");
+                using var read = source.CreateCommand();
+                read.CommandText = $"""
+                    SELECT settings_json,
+                           {(hasPassword ? "password_protected" : "NULL")} AS password_protected,
+                           {(hasToken ? "search_service_token_protected" : "NULL")} AS search_service_token_protected,
+                           updated_at
+                    FROM machine_settings
+                    WHERE machine_id = $machine COLLATE NOCASE
+                    LIMIT 1;
+                    """;
+                read.Parameters.AddWithValue("$machine", AppConfig.CurrentHostKey);
+                using var legacy = read.ExecuteReader();
+                if (!legacy.Read())
+                {
+                    continue;
+                }
+
+                using var write = destination.CreateCommand();
+                write.CommandText = """
+                    INSERT INTO machine_settings (machine_id, settings_json, password_protected, search_service_token_protected, updated_at)
+                    VALUES ($machine, $settings, $password, $serviceToken, $updated)
+                    ON CONFLICT(machine_id) DO NOTHING;
+                    """;
+                write.Parameters.AddWithValue("$machine", AppConfig.CurrentHostKey);
+                write.Parameters.AddWithValue("$settings", legacy.GetString(0));
+                write.Parameters.Add("$password", SqliteType.Blob).Value = legacy.IsDBNull(1) ? DBNull.Value : legacy.GetFieldValue<byte[]>(1);
+                write.Parameters.Add("$serviceToken", SqliteType.Blob).Value = legacy.IsDBNull(2) ? DBNull.Value : legacy.GetFieldValue<byte[]>(2);
+                write.Parameters.AddWithValue("$updated", legacy.GetInt64(3));
+                if (write.ExecuteNonQuery() > 0)
+                {
+                    AppLogger.Info("config", "imported legacy Linux local SQLite settings");
+                    return true;
+                }
+            }
+            catch (SqliteException)
+            {
+                // A partial or locked legacy database should never block startup.
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return false;
+    }
+
     private static string SerializeWithoutPassword(HostConfig settings)
     {
         var node = JsonSerializer.SerializeToNode(settings, JsonOptions)?.AsObject()
@@ -294,5 +373,21 @@ public sealed class MachineSettingsStore
         using var alter = connection.CreateCommand();
         alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {definition};";
         alter.ExecuteNonQuery();
+    }
+
+    private static bool HasColumn(SqliteConnection connection, string table, string column)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.GetString(1).Equals(column, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
