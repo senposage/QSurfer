@@ -31,13 +31,16 @@ public sealed partial class App : Application
             desktop.Exit += (_, _) => DisposeWindowsServices();
 
             Program.SingleInstance.ActivationRequested += () => Dispatcher.UIThread.Post(RestoreMainWindow);
-            _hotkey.Pressed += () => Dispatcher.UIThread.Post(ToggleMainWindow);
             CreateTrayIcon();
 
-            var registration = ConfigureGlobalHotkey(_mainWindow.Config.Behavior.GlobalHotkey);
-            if (!registration.Registered)
+            if (OperatingSystem.IsWindows())
             {
-                _mainWindow.SetStatus(registration.Error);
+                _hotkey.Pressed += () => Dispatcher.UIThread.Post(ToggleMainWindow);
+                var registration = ConfigureGlobalHotkey(_mainWindow.Config.Behavior.GlobalHotkey);
+                if (!registration.Registered)
+                {
+                    _mainWindow.SetStatus(registration.Error);
+                }
             }
 
             var executable = Environment.ProcessPath ?? "unknown";

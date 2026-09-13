@@ -1,0 +1,56 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="QSurfer.Avalonia.WhatsNewWindow"
+        Title="Welcome to QSurfer"
+        Width="700"
+        Height="520"
+        MinWidth="620"
+        MinHeight="460"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="6">
+      <TextBlock x:Name="HeadingText" FontSize="22" FontWeight="SemiBold" />
+      <TextBlock x:Name="SubheadingText" Classes="field-label" />
+    </StackPanel>
+
+    <Grid Grid.Row="1" Margin="0,22,0,18">
+      <StackPanel x:Name="WelcomePage" Spacing="14">
+        <TextBlock Text="QSurfer is a shared-file workspace: it searches indexed NAS content, opens files using your normal access, and lets you browse folders without giving up an active search." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="The basic idea" FontWeight="SemiBold" /><TextBlock Text="Use the search box to find files and folders. Use the address box or Navigation pane to browse. Each tab can switch between both views, and tabs can move into their own QSurfer window." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="This guide takes about a minute. The Help button in the main window opens the full reference whenever you need it." TextWrapping="Wrap" Classes="help-copy" />
+      </StackPanel>
+      <StackPanel x:Name="ConnectionPage" IsVisible="False" Spacing="14">
+        <TextBlock Text="Connect to your search service" Classes="help-topic-title" />
+        <TextBlock Text="Open Settings and configure Qsirch, QIndexer, or both. Qsirch uses NAS sign-in details; QIndexer uses its own service address and token. These credentials are used only to ask configured providers for indexed results." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="File access stays yours" FontWeight="SemiBold" /><TextBlock Text="Browsing, Open, Show, copy, and recovery use your regular network permissions through mapped drives or mounted shares. A successful search sign-in does not grant access to a file you normally cannot open." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Connection defaults can be deployed for a team. Your own favorites, saved searches, history, appearance, layout, and shortcuts remain personal to this workstation and account." TextWrapping="Wrap" Classes="help-copy" />
+      </StackPanel>
+      <StackPanel x:Name="SearchPage" IsVisible="False" Spacing="14">
+        <TextBlock Text="Find the right result" Classes="help-topic-title" />
+        <TextBlock Text="Enter a name in the search box and press Enter. Leave Search contents off when you want names and paths; turn it on when you need text inside indexed documents. Exact match narrows name searches to whole words." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Narrow before a broad search gets noisy" FontWeight="SemiBold" /><TextBlock Text="Use file types, date controls, arrangement, and view mode to focus results. Search in one or more folders with Shift+Click in Navigation. Shift+Alt+Click excludes a folder, even when the rest of the search stays broad. Both gestures can be changed in Settings." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Favorites save files and folders. Saved searches remember the query, filters, view, sort order, and selected or excluded folders, then open in their own tab." TextWrapping="Wrap" Classes="help-copy" />
+      </StackPanel>
+      <StackPanel x:Name="BrowsePage" IsVisible="False" Spacing="14">
+        <TextBlock Text="Browse like a file manager" Classes="help-topic-title" />
+        <TextBlock Text="Use Navigation, the address field, or a folder result to open a folder. Back, Forward, Up, and Refresh behave like Explorer. Double-click a file to open it in its normal application." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="One workspace, not two modes" FontWeight="SemiBold" /><TextBlock Text="A tab keeps its search while you inspect folders. Click the search field or search glyph to return to it; click the folder glyph or address field to return to browsing. Right-click an item for familiar file operations and Properties." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Mapped drives are preferred where present. Path mappings explain how the NAS path returned by search connects to the drive or mounted share that opens the file." TextWrapping="Wrap" Classes="help-copy" />
+      </StackPanel>
+      <StackPanel x:Name="RecoveryPage" IsVisible="False" Spacing="14">
+        <TextBlock Text="Preview and recover safely" Classes="help-topic-title" />
+        <TextBlock Text="Select an item to load its preview when a supported handler is available. You can keep searching or browsing while the preview initializes." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Deleted or older files" FontWeight="SemiBold" /><TextBlock Text="NAS Recycle Bin entries can be restored to their original location. Version history opens snapshot copies when the NAS exposes them. Recover copy writes a separate copy; Restore original always confirms before replacing a live item and preserves the current item as a QSurfer safety copy." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="You are ready. Open Help anytime for the complete guide to settings, recovery policy, file operations, shortcuts, and troubleshooting." TextWrapping="Wrap" Classes="help-copy" />
+      </StackPanel>
+    </Grid>
+
+    <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+      <Button Content="Open Help" Click="Help_Click" HorizontalAlignment="Left" />
+      <TextBlock x:Name="PageIndicator" Grid.Column="1" Classes="field-label" VerticalAlignment="Center" HorizontalAlignment="Center" />
+      <Button x:Name="BackButton" Grid.Column="2" Content="Back" Click="Back_Click" />
+      <Button x:Name="NextButton" Grid.Column="3" Classes="primary" Content="Next" Click="Next_Click" IsDefault="True" />
+    </Grid>
+  </Grid>
+</Window>

@@ -152,7 +152,7 @@ public sealed class SearchResult : INotifyPropertyChanged
     public DateTime? ModifiedDate => TryParseModified(Modified);
     public string ModifiedGroup => DateGroup(ModifiedDate);
     public string IconText => IsFolder ? "Folder" : "File";
-    public string IconGlyph => IsFolder ? "\uE8B7" : "\uE7C3";
+    public string IconGlyph => IsFolder ? "\U0001F4C1" : FileGlyph(Extension);
     public bool HasThumbnailAction
     {
         get
@@ -204,6 +204,20 @@ public sealed class SearchResult : INotifyPropertyChanged
         }
         return null;
     }
+
+    internal static string FileGlyph(string? extension) => (extension ?? "").Trim().TrimStart('.').ToLowerInvariant() switch
+    {
+        "pdf" => "\U0001F4D5",
+        "doc" or "docx" or "odt" or "rtf" => "\U0001F4DD",
+        "xls" or "xlsx" or "ods" or "csv" => "\U0001F4CA",
+        "ppt" or "pptx" or "odp" => "\U0001F4FD",
+        "jpg" or "jpeg" or "png" or "gif" or "bmp" or "webp" or "tif" or "tiff" => "\U0001F5BC",
+        "zip" or "rar" or "7z" or "tar" or "gz" => "\U0001F5DC",
+        "mp3" or "wav" or "flac" or "m4a" or "ogg" => "\U0001F3B5",
+        "mp4" or "mov" or "mkv" or "avi" or "wmv" or "webm" => "\U0001F3AC",
+        "txt" or "log" or "md" => "\U0001F4C4",
+        _ => "\U0001F4C4",
+    };
 
     private static string DateGroup(DateTime? value)
     {
@@ -327,7 +341,7 @@ public sealed class FavoriteGroupNode
     public bool IsAllFavorites { get; init; }
     public bool IsSelected { get; set; }
     public ObservableCollection<FavoriteGroupNode> Children { get; } = [];
-    public string Glyph => IsAllFavorites ? "\uE73A" : "\uE8B7";
+    public string Glyph => IsAllFavorites ? "\u2605" : "\U0001F4C1";
 }
 
 public sealed class FavoriteTreeNode
@@ -340,11 +354,29 @@ public sealed class FavoriteTreeNode
     public bool IsExpanded { get; set; }
     public ObservableCollection<FavoriteTreeNode> Children { get; } = [];
     public bool IsFolder => Result == null && SavedSearch == null;
-    public string Glyph => IsFolder ? "\uE8B7" : SavedSearch != null ? "\uE8A2" : Result!.IconGlyph;
+    public string Glyph => IsFolder ? "\U0001F4C1" : SavedSearch != null ? "\U0001F50D" : Result!.IconGlyph;
     public string ToolTip => IsFolder ? Name : SavedSearch != null ? SavedSearch.Query : $"{Result!.FileName}\n{Result.DisplayPath}";
 }
 
-public sealed record SavedSearch(long Id, string Name, string Query);
+public sealed record SavedSearch(
+    long Id,
+    string Name,
+    string Query,
+    IReadOnlyList<string> ScopePaths,
+    IReadOnlyList<string> ExcludedScopePaths,
+    IReadOnlyList<string> TypeNames,
+    string ViewKey,
+    string SortValue,
+    DateTime? DateFrom,
+    DateTime? DateTo,
+    bool ExactMatch,
+    bool SearchContents)
+{
+    public SavedSearch(long id, string name, string query)
+        : this(id, name, query, [], [], [], "details", "recent:desc", null, DateTime.Today, false, false)
+    {
+    }
+}
 
 public sealed record ExplorerResultGroup(string Key, string Name, string Location)
 {

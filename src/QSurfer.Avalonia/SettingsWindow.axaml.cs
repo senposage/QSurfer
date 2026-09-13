@@ -16,6 +16,7 @@ public sealed partial class SettingsWindow : Window
     private readonly List<ScopedTextRule> _initialGlobalFolderRules;
     private readonly List<ScopedTextRule> _initialGlobalFileRules;
     private readonly List<VisibilityRule> _initialGlobalVisibilityRules;
+    private readonly List<PathMapping> _initialGlobalMappings;
     private readonly Dictionary<TextBox, DateTimeOffset> _escapeHeldSince = new();
     private static readonly TimeSpan EscapeClearDelay = TimeSpan.FromMilliseconds(650);
     private bool _updatingThemeColors;
@@ -31,12 +32,20 @@ public sealed partial class SettingsWindow : Window
         _configureHotkey = configureHotkey;
         InitializeComponent();
 
-        CanEditGlobalRules = GlobalRuleAuthorization.CanManageGlobalRules();
+        CanEditGlobalSettings = GlobalRuleAuthorization.CanManageGlobalSettings();
+        SaveSharedConnectionDefaultsBox.IsEnabled = CanEditGlobalSettings;
+        SaveSharedSearchServiceDefaultsBox.IsEnabled = CanEditGlobalSettings;
+        SharedDeploymentLockedText.IsVisible = !CanEditGlobalSettings;
+        if (!CanEditGlobalSettings && !OperatingSystem.IsWindows())
+        {
+            SharedDeploymentLockedText.Text = "Global deployment settings require write access to this QSurfer deployment's config folder. Ordinary saves remain private to this user.";
+        }
         var currentUser = GlobalRuleAuthorization.GetCurrentUserStatus();
-        WindowsIdentityText.Text = $"Windows user: {currentUser.UserName}  |  Access: {currentUser.DisplayStatus}";
+        WindowsIdentityText.Text = $"Current user: {currentUser.UserName}  |  Access: {currentUser.DisplayStatus}";
         _initialGlobalFolderRules = config.Exclude.FolderRules.Where(rule => rule.IsGlobal).Select(CloneRule).ToList();
         _initialGlobalFileRules = config.Exclude.FileRules.Where(rule => rule.IsGlobal).Select(CloneRule).ToList();
         _initialGlobalVisibilityRules = config.VisibilityRules.Where(rule => rule.IsGlobal).Select(CloneVisibilityRule).ToList();
+        _initialGlobalMappings = config.PathMappings.Where(mapping => mapping.IsGlobal).Select(CloneMapping).ToList();
 
         Mappings = new ObservableCollection<PathMapping>(config.PathMappings.Select(CloneMapping));
         DetectedMappings = new ObservableCollection<WindowsDriveMapping>(PathMapper.DiscoverWindowsDriveMappings());
@@ -55,16 +64,36 @@ public sealed partial class SettingsWindow : Window
         FileRulesGrid.ItemsSource = FileRules;
         VisibilityRulesGrid.ItemsSource = VisibilityRules;
 
+        ConfigurePathMappingsForPlatform();
+
+        EnableQsirchBox.IsChecked = config.QsirchEnabled;
         HostBox.Text = config.Host;
         PortBox.Text = config.Port.ToString();
         UsernameBox.Text = config.User;
-        PasswordBox.Text = config.Password;
+        // Credentials are never reflected back into the UI. Leave this empty
+        // to retain the saved credential, or enter a value to replace it.
+        PasswordBox.Text = "";
+        PasswordBox.Watermark = string.IsNullOrWhiteSpace(config.Password)
+            ? "Required"
+            : "Saved credential (enter to replace)";
         SslBox.IsChecked = config.Ssl;
         VerifyCertificateBox.IsChecked = config.SslVerify;
+        EnableSearchServiceBox.IsChecked = config.SearchService.Enabled;
+        SearchServiceHostBox.Text = config.SearchService.Host;
+        SearchServicePortBox.Text = config.SearchService.Port.ToString();
+        SearchServiceTokenBox.Text = "";
+        SearchServiceTokenBox.Watermark = string.IsNullOrWhiteSpace(config.SearchService.Token)
+            ? "Required bearer token"
+            : "Saved token (enter to replace)";
+        SearchServiceSslBox.IsChecked = config.SearchService.Ssl;
+        SearchServiceVerifyCertificateBox.IsChecked = config.SearchService.SslVerify;
+        UpdateQsirchFields();
+        UpdateSearchServiceFields();
         ShowInTaskbarBox.IsChecked = config.Behavior.ShowInTaskbar;
         MinimizeToTrayBox.IsChecked = config.Behavior.MinimizeToTray;
         ExitToTrayBox.IsChecked = config.Behavior.ExitToTray;
         ClearResultsWithQueryBox.IsChecked = config.Behavior.ClearResultsWithQuery;
+        ConfirmScopeReplacementBox.IsChecked = config.Behavior.ConfirmScopeReplacement;
         AlwaysOnTopBox.IsChecked = config.AlwaysOnTop;
         DefaultSearchContentsBox.IsChecked = config.Behavior.SearchContents;
         HighlightMatchesBox.IsChecked = config.Behavior.HighlightMatches;
@@ -73,11 +102,14 @@ public sealed partial class SettingsWindow : Window
         ShowQSurferSafetyCopiesBox.IsChecked = config.Behavior.ShowQSurferSafetyCopies;
         ShowHiddenTemporaryFilesBox.IsChecked = config.Behavior.ShowHiddenTemporaryFiles;
         FlattenRecycleBinBox.IsChecked = config.Behavior.FlattenRecycleBin;
+        ShowLocalNavigationFoldersBox.IsChecked = config.Behavior.ShowLocalNavigationFolders;
+        ShowLocalNavigationDrivesBox.IsChecked = config.Behavior.ShowLocalNavigationDrives;
         UseThumbnailsBox.IsChecked = config.Behavior.UseQsirchThumbnails;
-        ResultLimitBox.Text = Math.Clamp(config.Behavior.MaxSearchResults, 50, 5000).ToString();
+        ResultLimitBox.Text = Math.Max(config.Behavior.MaxSearchResults, 50).ToString();
         SearchTimeoutBox.Text = Math.Clamp(config.Behavior.SearchTimeoutSeconds, 10, 300).ToString();
         FirstPageSizeBox.Text = Math.Clamp(config.Behavior.FirstPageSize, 5, 500).ToString();
         NextPageSizeBox.Text = Math.Clamp(config.Behavior.NextPageSize, 10, 500).ToString();
+        BulkOpenLimitBox.Text = Math.Clamp(config.Behavior.MaxBulkOpenTabs, 1, 100).ToString();
         HotkeyBox.Text = config.Behavior.GlobalHotkey;
         FocusSearchShortcutBox.Text = config.Behavior.KeyboardShortcuts.FocusSearch;
         RefreshShortcutBox.Text = config.Behavior.KeyboardShortcuts.Refresh;
@@ -92,6 +124,8 @@ public sealed partial class SettingsWindow : Window
         DeleteShortcutBox.Text = config.Behavior.KeyboardShortcuts.Delete;
         NewFolderShortcutBox.Text = config.Behavior.KeyboardShortcuts.NewFolder;
         FavoriteShortcutBox.Text = config.Behavior.KeyboardShortcuts.Favorite;
+        SelectTaggedItem(NavigationScopeIncludeGestureBox, config.Behavior.NavigationScopeIncludeGesture, "Shift");
+        SelectTaggedItem(NavigationScopeExcludeGestureBox, config.Behavior.NavigationScopeExcludeGesture, "Shift+Alt");
         SelectTaggedItem(ResultViewBox, config.Behavior.ResultView, "details");
         SelectTaggedItem(ResultSortBox, config.Behavior.ResultSort, "folder");
         SelectTaggedItem(OriginalRestorePolicyBox, config.Behavior.OriginalRestorePolicy, "files");
@@ -109,8 +143,9 @@ public sealed partial class SettingsWindow : Window
     public bool ClearHistoryRequested { get; private set; }
     public bool ClearStarredRequested { get; private set; }
     public bool ResetDatabaseRequested { get; private set; }
-    public bool CanEditGlobalRules { get; }
-    public bool GlobalRulesAreLocked => !CanEditGlobalRules;
+    public bool CanEditGlobalSettings { get; }
+    public bool CanEditGlobalRules => CanEditGlobalSettings;
+    public bool GlobalRulesAreLocked => !CanEditGlobalSettings;
     public ObservableCollection<PathMapping> Mappings { get; }
     public ObservableCollection<WindowsDriveMapping> DetectedMappings { get; }
     public ObservableCollection<ScopedTextRule> FolderRules { get; }
@@ -119,10 +154,13 @@ public sealed partial class SettingsWindow : Window
 
     private void Save_Click(object? sender, RoutedEventArgs e)
     {
-        var host = HostBox.Text?.Trim() ?? "";
+        var host = NasIdentity.NormalizeHost(HostBox.Text);
         var user = UsernameBox.Text?.Trim() ?? "";
-        var password = PasswordBox.Text ?? "";
-        if ((!string.IsNullOrWhiteSpace(host) || !string.IsNullOrWhiteSpace(user) || !string.IsNullOrWhiteSpace(password)) &&
+        var enteredPassword = PasswordBox.Text ?? "";
+        var password = string.IsNullOrWhiteSpace(enteredPassword) ? _config.Password : enteredPassword;
+        var qsirchEnabled = EnableQsirchBox.IsChecked == true;
+        if (qsirchEnabled &&
+            (!string.IsNullOrWhiteSpace(host) || !string.IsNullOrWhiteSpace(user) || !string.IsNullOrWhiteSpace(password)) &&
             (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password)))
         {
             ShowValidation("Enter the NAS host, username, and password together.");
@@ -133,9 +171,37 @@ public sealed partial class SettingsWindow : Window
             ShowValidation("Enter a port number between 1 and 65535.");
             return;
         }
-        if (!int.TryParse(ResultLimitBox.Text, out var limit) || limit is < 50 or > 5000)
+        var serviceEnabled = EnableSearchServiceBox.IsChecked == true;
+        var serviceHost = NasIdentity.NormalizeHost(SearchServiceHostBox.Text);
+        var enteredServiceToken = SearchServiceTokenBox.Text ?? "";
+        var serviceToken = string.IsNullOrWhiteSpace(enteredServiceToken)
+            ? _config.SearchService.Token
+            : enteredServiceToken;
+        if (!int.TryParse(SearchServicePortBox.Text, out var servicePort) || servicePort is < 1 or > 65535)
         {
-            ShowValidation("Search result limit must be from 50 to 5000.");
+            ShowValidation("Enter a search-service port number between 1 and 65535.");
+            return;
+        }
+        if (serviceEnabled && (string.IsNullOrWhiteSpace(serviceHost) || string.IsNullOrWhiteSpace(serviceToken)))
+        {
+            ShowValidation("Enter the search-service host and token together.");
+            return;
+        }
+        if (!qsirchEnabled && !serviceEnabled)
+        {
+            ShowValidation("Configure the NAS connection, QSurfer Search Service, or both.");
+            return;
+        }
+        var saveSharedConnectionDefaults = SaveSharedConnectionDefaultsBox.IsChecked == true;
+        var saveSharedSearchServiceDefaults = SaveSharedSearchServiceDefaultsBox.IsChecked == true;
+        if ((saveSharedConnectionDefaults || saveSharedSearchServiceDefaults) && !CanEditGlobalSettings)
+        {
+            ShowValidation("Only a local Administrator or Domain Admin can update shared deployment defaults.");
+            return;
+        }
+        if (!int.TryParse(ResultLimitBox.Text, out var limit) || limit < 50)
+        {
+            ShowValidation("Search result limit must be at least 50.");
             return;
         }
         if (!int.TryParse(SearchTimeoutBox.Text, out var timeout) || timeout is < 10 or > 300)
@@ -151,6 +217,11 @@ public sealed partial class SettingsWindow : Window
         if (!int.TryParse(NextPageSizeBox.Text, out var nextPageSize) || nextPageSize is < 10 or > 500)
         {
             ShowValidation("Additional results must be from 10 to 500.");
+            return;
+        }
+        if (!int.TryParse(BulkOpenLimitBox.Text, out var bulkOpenLimit) || bulkOpenLimit is < 1 or > 100)
+        {
+            ShowValidation("Folders opened at once must be from 1 to 100.");
             return;
         }
         if (!WindowsHotkeyService.TryNormalize(HotkeyBox.Text, out var hotkey, out var hotkeyError))
@@ -187,17 +258,31 @@ public sealed partial class SettingsWindow : Window
             HotkeyStatus.Text = $"Registered {hotkey}.";
         }
 
+        _config.SearchProvider = SearchProviders.Qsirch;
+        _config.QsirchEnabled = qsirchEnabled;
         _config.Host = host;
         _config.Port = SslBox.IsChecked == true && port == 8080 ? 443 : port;
         _config.User = user;
         _config.Password = password;
         _config.Ssl = SslBox.IsChecked == true;
         _config.SslVerify = VerifyCertificateBox.IsChecked == true;
+        _config.SearchService = new SearchServiceConnection
+        {
+            Enabled = serviceEnabled,
+            Host = serviceHost,
+            Port = SearchServiceSslBox.IsChecked == true && servicePort == 8080 ? 443 : servicePort,
+            Ssl = SearchServiceSslBox.IsChecked == true,
+            SslVerify = SearchServiceVerifyCertificateBox.IsChecked == true,
+            Token = serviceToken,
+        };
         _config.AlwaysOnTop = AlwaysOnTopBox.IsChecked == true;
         _config.Behavior.ShowInTaskbar = ShowInTaskbarBox.IsChecked == true;
         _config.Behavior.MinimizeToTray = MinimizeToTrayBox.IsChecked == true;
         _config.Behavior.ExitToTray = ExitToTrayBox.IsChecked == true;
         _config.Behavior.ClearResultsWithQuery = ClearResultsWithQueryBox.IsChecked == true;
+        _config.Behavior.ConfirmScopeReplacement = ConfirmScopeReplacementBox.IsChecked != false;
+        _config.Behavior.NavigationScopeIncludeGesture = SelectedTag(NavigationScopeIncludeGestureBox, "Shift");
+        _config.Behavior.NavigationScopeExcludeGesture = SelectedTag(NavigationScopeExcludeGestureBox, "Shift+Alt");
         _config.Behavior.SearchContents = DefaultSearchContentsBox.IsChecked == true;
         _config.Behavior.HighlightMatches = HighlightMatchesBox.IsChecked == true;
         _config.Behavior.PreviewPane = PreviewPaneBox.IsChecked == true;
@@ -205,11 +290,14 @@ public sealed partial class SettingsWindow : Window
         _config.Behavior.ShowQSurferSafetyCopies = ShowQSurferSafetyCopiesBox.IsChecked == true;
         _config.Behavior.ShowHiddenTemporaryFiles = ShowHiddenTemporaryFilesBox.IsChecked == true;
         _config.Behavior.FlattenRecycleBin = FlattenRecycleBinBox.IsChecked == true;
+        _config.Behavior.ShowLocalNavigationFolders = ShowLocalNavigationFoldersBox.IsChecked == true;
+        _config.Behavior.ShowLocalNavigationDrives = ShowLocalNavigationDrivesBox.IsChecked == true;
         _config.Behavior.UseQsirchThumbnails = UseThumbnailsBox.IsChecked == true;
         _config.Behavior.MaxSearchResults = limit;
         _config.Behavior.SearchTimeoutSeconds = timeout;
         _config.Behavior.FirstPageSize = firstPageSize;
         _config.Behavior.NextPageSize = nextPageSize;
+        _config.Behavior.MaxBulkOpenTabs = bulkOpenLimit;
         _config.Behavior.Theme = SelectedTheme();
         _config.Behavior.ThemeColors = themeColors;
         _config.Behavior.UseWindowsAccentColor = UseWindowsAccentColorBox.IsChecked == true;
@@ -232,7 +320,7 @@ public sealed partial class SettingsWindow : Window
                 return;
             }
         }
-        _config.PathMappings = mappings;
+        _config.PathMappings = PreserveGlobalMappings(mappings, _initialGlobalMappings);
         var folderRules = NormalizeRules(FolderRules);
         var fileRules = NormalizeRules(FileRules);
         var visibilityRules = VisibilityRules
@@ -250,9 +338,53 @@ public sealed partial class SettingsWindow : Window
         _config.VisibilityRules = PreserveGlobalRules(visibilityRules, _initialGlobalVisibilityRules);
         ClearHistoryRequested = ClearHistoryBox.IsChecked == true;
         ClearStarredRequested = ClearStarredBox.IsChecked == true;
+        if (saveSharedConnectionDefaults && !ConfigStore.SaveSharedDeploymentConnection(
+                _config.Host,
+                _config.Port,
+                _config.Ssl,
+                _config.SslVerify,
+                _config.User,
+                _config.Password))
+        {
+            ShowValidation("Could not update the shared deployment defaults. Check that the portable config folder is writable and try again.");
+            return;
+        }
+        if (saveSharedSearchServiceDefaults && !ConfigStore.SaveSharedDeploymentSearchService(_config.SearchService))
+        {
+            ShowValidation("Could not update the shared search-service deployment defaults. Configure and enable the service, then try again.");
+            return;
+        }
         ConfigStore.Save(_config);
         Saved = true;
         Close();
+    }
+
+    private void QsirchEnabledChanged(object? sender, RoutedEventArgs e) => UpdateQsirchFields();
+
+    private void UpdateQsirchFields()
+    {
+        if (QsirchSettingsPanel == null)
+        {
+            return;
+        }
+
+        var enabled = EnableQsirchBox.IsChecked == true;
+        QsirchSettingsPanel.IsEnabled = enabled;
+        SaveSharedConnectionDefaultsBox.IsEnabled = enabled && CanEditGlobalSettings;
+    }
+
+    private void SearchServiceEnabledChanged(object? sender, RoutedEventArgs e) => UpdateSearchServiceFields();
+
+    private void UpdateSearchServiceFields()
+    {
+        if (SearchServiceSettingsPanel == null || SearchServiceTokenBox == null)
+        {
+            return;
+        }
+
+        var enabled = EnableSearchServiceBox.IsChecked == true;
+        SearchServiceSettingsPanel.IsEnabled = enabled;
+        SaveSharedSearchServiceDefaultsBox.IsEnabled = enabled && CanEditGlobalSettings;
     }
 
     private void Cancel_Click(object? sender, RoutedEventArgs e) => Close();
@@ -377,6 +509,64 @@ public sealed partial class SettingsWindow : Window
     {
         var drive = MapDriveBox.Text?.Trim() ?? "";
         var networkPath = MapNetworkPathBox.Text?.Trim() ?? "";
+        if (!OperatingSystem.IsWindows())
+        {
+            MapNetworkDriveButton.IsEnabled = false;
+            var restoreWindowAfterAuthorization = false;
+            try
+            {
+                // Polkit owns its credential prompt. Minimize this modal dialog first so
+                // KDE, GNOME, and other desktops never place that prompt behind QSurfer.
+                ShowValidation("Waiting for system authorization to mount the share...");
+                if (WindowState != WindowState.Minimized)
+                {
+                    WindowState = WindowState.Minimized;
+                    restoreWindowAfterAuthorization = true;
+                    await Task.Delay(150);
+                }
+
+                var existing = Mappings.FirstOrDefault(mapping =>
+                    mapping.ShareRoot.Equals(networkPath, StringComparison.OrdinalIgnoreCase));
+                var mountOutcome = await LinuxNativeCifsMountService.MountAsync(
+                    networkPath,
+                    _config.Host,
+                    _config.User,
+                    _config.Password,
+                    reconnectAfterReboot: MapReconnectBox.IsChecked == true,
+                    replacedMountPoint: existing?.MappedRoot);
+                if (!mountOutcome.Succeeded)
+                {
+                    ShowValidation(mountOutcome.Error);
+                    return;
+                }
+
+                existing ??= Mappings.FirstOrDefault(mapping =>
+                    mapping.ShareRoot.Equals(mountOutcome.ShareRoot, StringComparison.OrdinalIgnoreCase));
+                if (existing is null)
+                {
+                    existing = new PathMapping();
+                    Mappings.Add(existing);
+                }
+                existing.ShareRoot = mountOutcome.ShareRoot;
+                existing.MappedRoot = mountOutcome.MountPoint;
+                MappingsGrid.SelectedItem = existing;
+                MapNetworkPathBox.Text = "";
+                ShowValidation(MapReconnectBox.IsChecked == true
+                    ? "Native SMB share is configured to mount at boot. Save settings to keep this NAS-to-local mapping."
+                    : "Native SMB share mounted. Save settings to keep this NAS-to-local mapping.");
+            }
+            finally
+            {
+                if (restoreWindowAfterAuthorization)
+                {
+                    WindowState = WindowState.Normal;
+                    Activate();
+                }
+                MapNetworkDriveButton.IsEnabled = true;
+            }
+            return;
+        }
+
         var reconnect = MapReconnectBox.IsChecked == true;
         var outcome = await Task.Run(() =>
         {
@@ -397,6 +587,24 @@ public sealed partial class SettingsWindow : Window
         MapDriveBox.Text = "";
         MapNetworkPathBox.Text = "";
         ShowValidation("Network drive mapped. QSurfer will use it automatically.");
+    }
+
+    private void ConfigurePathMappingsForPlatform()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        PathMappingsIntro.Text = "Mount a native Linux SMB share here. Enable mount at boot to create a root-owned credential file and a system-wide systemd mount.";
+        MapNetworkDriveLabel.Text = "Mount SMB share";
+        MapDriveBox.IsVisible = false;
+        MapReconnectBox.IsVisible = true;
+        MapReconnectBox.Content = "Mount at boot";
+        MapReconnectBox.IsChecked = true;
+        MapNetworkDriveButton.Content = "Mount share";
+        DetectedMappingsGrid.IsVisible = false;
+        PathMappingsLayout.RowDefinitions[2].Height = new GridLength(0);
     }
 
     private void AddFolderRule_Click(object? sender, RoutedEventArgs e) => AddRule(FolderRulesGrid, FolderRules);
@@ -469,6 +677,18 @@ public sealed partial class SettingsWindow : Window
         }
 
         return originalGlobalRules.Concat(currentRules.Where(rule => !IsGlobal(rule))).ToList();
+    }
+
+    private List<PathMapping> PreserveGlobalMappings(IEnumerable<PathMapping> currentMappings, IEnumerable<PathMapping> originalGlobalMappings)
+    {
+        if (CanEditGlobalSettings)
+        {
+            return currentMappings.Select(CloneMapping).ToList();
+        }
+
+        return originalGlobalMappings.Select(CloneMapping)
+            .Concat(currentMappings.Where(mapping => !mapping.IsGlobal).Select(CloneMapping))
+            .ToList();
     }
 
     private static bool IsGlobal<T>(T rule) where T : class => rule switch
@@ -798,7 +1018,7 @@ public sealed partial class SettingsWindow : Window
     private string SelectedTheme() => (ThemeBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "system";
     private static string SelectedTag(ComboBox box, string fallback) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? fallback;
     private static string NormalizeMappedRoot(string path) => (path ?? "").Trim().TrimEnd('\\', '/');
-    private static PathMapping CloneMapping(PathMapping mapping) => new() { ShareRoot = mapping.ShareRoot, MappedRoot = mapping.MappedRoot };
+    private static PathMapping CloneMapping(PathMapping mapping) => new() { ShareRoot = mapping.ShareRoot, MappedRoot = mapping.MappedRoot, IsGlobal = mapping.IsGlobal };
     private static ScopedTextRule CloneRule(ScopedTextRule rule) => new() { Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
     private static VisibilityRule CloneVisibilityRule(VisibilityRule rule) => new() { Access = rule.Access, Identity = rule.Identity, Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
 

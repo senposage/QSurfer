@@ -8,17 +8,22 @@ public sealed class NavigationTreeNode : INotifyPropertyChanged
 {
     private bool _isExpanded;
     private bool _childrenLoaded;
+    private bool _isScopeSelected;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public string Name { get; init; } = "";
     public string FullPath { get; init; } = "";
     public bool IsPlaceholder { get; init; }
+    public bool IsHome { get; init; }
     public bool IsRecoveryFolder { get; init; }
     public bool IsShareRoot { get; init; }
+    public bool IsDrive { get; init; }
+    public double DriveUsedFraction { get; init; }
+    public string DriveSpaceText { get; init; } = "";
     public Func<NavigationTreeNode, Task>? ExpandAsync { get; init; }
     public ObservableCollection<NavigationTreeNode> Children { get; } = [];
-    public string Glyph => IsRecoveryFolder ? "\uE74D" : "\uE8B7";
+    public string Glyph => IsHome ? "\U0001F3E0" : IsRecoveryFolder ? "\u267B" : IsDrive ? "\U0001F4BD" : "\U0001F4C1";
     public object? IconSource { get; init; }
 
     public void EnsurePlaceholder()
@@ -52,6 +57,12 @@ public sealed class NavigationTreeNode : INotifyPropertyChanged
     {
         get => _childrenLoaded;
         set => SetField(ref _childrenLoaded, value);
+    }
+
+    public bool IsScopeSelected
+    {
+        get => _isScopeSelected;
+        set => SetField(ref _isScopeSelected, value);
     }
 
     private void SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)

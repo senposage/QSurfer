@@ -47,7 +47,7 @@ public static class AppLogger
         try
         {
             var sessionPath = SessionLogPath;
-            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [SESSION] {Environment.MachineName}\\{Environment.UserName} {message}{Environment.NewLine}";
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [SESSION] {Sanitize(message)}{Environment.NewLine}";
             Directory.CreateDirectory(Path.GetDirectoryName(sessionPath) ?? AppContext.BaseDirectory);
             lock (Gate)
             {
@@ -69,7 +69,7 @@ public static class AppLogger
     {
         try
         {
-            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] [{area}] {Environment.MachineName}\\{Environment.UserName} {message}{Environment.NewLine}";
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] [{area}] {Sanitize(message)}{Environment.NewLine}";
             Pending.Enqueue(new LogEntry(LogPathForArea(area), line));
             if (Interlocked.Exchange(ref _draining, 1) == 0)
             {
@@ -170,6 +170,19 @@ public static class AppLogger
         "qsirch" => ClientLogPath,
         _ => LogPath,
     };
+
+    private static string Sanitize(string value)
+    {
+        var sanitized = value ?? "";
+        var userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userHome))
+        {
+            sanitized = sanitized.Replace(userHome, "<user-home>", StringComparison.OrdinalIgnoreCase);
+            sanitized = sanitized.Replace(userHome.Replace('\\', '/'), "<user-home>", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return sanitized;
+    }
 
     private sealed record LogEntry(string Path, string Line);
 

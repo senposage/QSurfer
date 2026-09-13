@@ -6,6 +6,10 @@
     <AssemblyName>QSurfer.Core</AssemblyName>
     <RootNamespace>QSurfer.Core</RootNamespace>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.19" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />

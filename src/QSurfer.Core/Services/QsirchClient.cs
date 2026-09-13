@@ -9,19 +9,30 @@ using QSurfer.Core.Models;
 
 namespace QSurfer.Core.Services;
 
-public sealed class QsirchClient(AppConfig config) : IDisposable
+public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwareSearchProvider
 {
     private const int MaxThumbnailBytes = 4 * 1024 * 1024;
     private readonly HttpClient _http = CreateHttpClient(config);
     private readonly SemaphoreSlim _loginGate = new(1, 1);
     private readonly SemaphoreSlim _directorySearchGate = new(1, 1);
     private readonly QsirchSessionStore _sessionStore = new(config);
-    private readonly string _baseUrl = $"{(config.Ssl ? "https" : "http")}://{config.Host}:{config.Port}";
+    private readonly PathMapper _scopeMapper = new(config);
+    private readonly string _baseUrl = $"{(config.Ssl ? "https" : "http")}://{NasIdentity.NormalizeHost(config.Host)}:{config.Port}";
     private bool _loggedIn;
     private string _sid = "";
     private DateTimeOffset _nextLoginAttemptUtc;
     private string _lastLoginFailure = "";
     private int _sessionGeneration;
+
+    public event Action<string>? SessionRecoveryStatus;
+
+    public string ProviderName => "Qsirch";
+
+    public Task EnsureAvailableAsync(CancellationToken cancellationToken, SearchProviderScope? scope = null) => EnsureAuthenticatedAsync(cancellationToken);
+
+    public bool CanSearchScope(SearchProviderScope scope) =>
+        scope.IncludePaths.Count == 0 ||
+        scope.IncludePaths.Any(path => !string.IsNullOrWhiteSpace(_scopeMapper.TryResolveNasSearchPath(path)));
 
     public Task EnsureAuthenticatedAsync(CancellationToken cancellationToken) => LoginAsync(cancellationToken);
 
@@ -58,7 +69,8 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         string? sortBy,
         string sortDir,
         Func<IReadOnlyList<SearchResult>, Task>? batchReceived,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SearchProviderScope? scope = null)
     {
         if (string.IsNullOrWhiteSpace(config.Host) || string.IsNullOrWhiteSpace(config.User) || string.IsNullOrWhiteSpace(config.Password))
         {
@@ -102,7 +114,11 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         return results;
     }
 
-    public async Task<IReadOnlyList<SearchResult>> SearchDirectoriesAsync(string query, int limit, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<SearchResult>> SearchDirectoriesAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken,
+        SearchProviderScope? scope = null)
     {
         if (string.IsNullOrWhiteSpace(config.Host) || string.IsNullOrWhiteSpace(config.User) || string.IsNullOrWhiteSpace(config.Password))
         {
@@ -431,7 +447,7 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
             {
                 var remaining = Math.Ceiling((_nextLoginAttemptUtc - DateTimeOffset.UtcNow).TotalSeconds);
                 var message = string.IsNullOrWhiteSpace(_lastLoginFailure)
-                    ? "QNAP sign-in is temporarily paused."
+                    ? "NAS search sign-in is temporarily paused."
                     : _lastLoginFailure;
                 throw new InvalidOperationException($"{message} Try again in {remaining:n0} seconds.");
             }
@@ -454,14 +470,14 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
                 var errorValue = xml.Root?.Element("errorValue")?.Value?.Trim() ?? "unknown";
                 _sessionStore.Clear();
                 _nextLoginAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(10);
-                _lastLoginFailure = "QNAP rejected the saved NAS username or password. Open Settings and update the connection.";
-                AppLogger.Warn("qsirch", $"login rejected by QNAP errorValue=\"{errorValue}\"; pausing retries for 10s");
+                _lastLoginFailure = "The NAS search service rejected the saved username or password. Open Settings and update the connection.";
+                AppLogger.Warn("qsirch", $"login rejected by NAS search service errorValue=\"{errorValue}\"; pausing retries for 10s");
                 throw new InvalidOperationException(_lastLoginFailure);
             }
             var sessionId = xml.Root?.Element("authSid")?.Value ?? "";
             if (string.IsNullOrWhiteSpace(sessionId))
             {
-                throw new InvalidOperationException("QNAP did not return an authSid.");
+                throw new InvalidOperationException("The NAS search service did not return an authentication session.");
             }
             ApplySession(sessionId);
             Interlocked.Increment(ref _sessionGeneration);
@@ -537,7 +553,7 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
     {
         int? rejectedSessionGeneration = null;
-        for (var attempt = 0; attempt < 2; attempt++)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
             await LoginAsync(cancellationToken, rejectedSessionGeneration);
             var sessionId = _sid;
@@ -555,6 +571,16 @@ public sealed class QsirchClient(AppConfig config) : IDisposable
             if (attempt == 0)
             {
                 AppLogger.Warn("qsirch", $"{operation} response status=401; session rejected, signing in once and retrying");
+                SessionRecoveryStatus?.Invoke("Session expired. Reconnecting...");
+                continue;
+            }
+
+            if (attempt == 1 && operation is "search" or "directory search")
+            {
+                _nextLoginAttemptUtc = DateTimeOffset.UtcNow.AddSeconds(10);
+                AppLogger.Warn("qsirch", $"{operation} response status=401 after a fresh sign-in; retrying the active search after 10s");
+                SessionRecoveryStatus?.Invoke("Session rejected. Retrying search in 10 seconds...");
+                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
                 continue;
             }
 

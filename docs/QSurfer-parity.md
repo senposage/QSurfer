@@ -9,7 +9,7 @@ The retired WPF application remains the behavioral reference. This is the curren
 - NAS host, port, credentials, HTTPS, and certificate verification are configurable in the UI.
 - Portable connection defaults and per-machine preferences load through the shared configuration store.
 - Path mappings prefer an available mapped drive and fall back to UNC paths.
-- Light, dark, and Follow Windows themes persist.
+- Light, dark, and Follow system themes persist.
 - Taskbar visibility, minimize/close to the notification area, click-to-restore tray icon, global show/hide hotkey, and single-instance activation are implemented.
 - Global visibility rules are editable only by a local Administrator or a domain Domain Admin. Local or domain accounts that are not privileged are treated as non-admins.
 - Help, GitHub, and donation links are available from the application.

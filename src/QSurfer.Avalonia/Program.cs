@@ -1,5 +1,6 @@
 using Avalonia;
 using QSurfer.Avalonia.Services;
+using QSurfer.Core.Services;
 
 namespace QSurfer.Avalonia;
 
@@ -10,6 +11,8 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        RuntimeMode.Configure(args);
+        RuntimeMode.ResetDemoWorkspace();
         if (!SingleInstance.TryAcquire())
         {
             return;

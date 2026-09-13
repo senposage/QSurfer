@@ -19,12 +19,29 @@ public sealed class PathMapper(AppConfig config)
         var fileName = result.FileName.Trim();
         if (!result.IsFolder && !result.HasUsableFileName)
         {
-            throw new InvalidOperationException("Qsirch did not provide a file name for this result. Run the search again to refresh it from the NAS.");
+            throw new InvalidOperationException("The NAS search service did not provide a file name for this result. Run the search again to refresh it from the NAS.");
         }
         if (!string.IsNullOrWhiteSpace(fileName) && !qpath.EndsWith(fileName, StringComparison.OrdinalIgnoreCase))
         {
             qpath = qpath.TrimEnd('\\') + "\\" + fileName;
         }
+        if (!OperatingSystem.IsWindows())
+        {
+            var linuxPath = ResolveLinuxPath(qpath);
+            if (Path.IsPathFullyQualified(linuxPath) && !linuxPath.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                return linuxPath;
+            }
+
+            linuxPath = ResolveLinuxPath(result.ResolvedPath);
+            if (Path.IsPathFullyQualified(linuxPath) && !linuxPath.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                return linuxPath;
+            }
+
+            throw new InvalidOperationException("Could not resolve this NAS result to a mounted Linux path. Add a NAS-to-local path mapping in Settings.");
+        }
+
         foreach (var mapping in OrderedPathMappings())
         {
             var target = Normalize(mapping.MappedRoot).TrimEnd('\\');
@@ -101,6 +118,11 @@ public sealed class PathMapper(AppConfig config)
 
     public string ResolveBrowserPath(string path)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return ResolveLinuxPath(path);
+        }
+
         var normalized = Normalize(path);
         if (string.IsNullOrWhiteSpace(normalized))
         {
@@ -163,11 +185,166 @@ public sealed class PathMapper(AppConfig config)
             }
         }
 
-        return ResolveFromMappedDrives(normalized) ?? normalized;
+        return ResolveFromMappedDrives(normalized) ?? ResolveNasUncPath(normalized) ?? normalized;
+    }
+
+    public string DisplayBrowserPath(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var uncPath = Normalize(path);
+            if (!uncPath.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+            {
+                return path;
+            }
+
+            var segments = uncPath.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length >= 2 && NasIdentity.HostsMatch(segments[0], config.Host))
+            {
+                return "\\" + string.Join("\\", segments.Skip(1));
+            }
+
+            return path;
+        }
+
+        var localPath = NormalizeUnixPath(path);
+        if (!Path.IsPathFullyQualified(localPath) || localPath.StartsWith("//", StringComparison.Ordinal))
+        {
+            return path;
+        }
+
+        foreach (var mapping in OrderedPathMappings())
+        {
+            var localRoot = NormalizeUnixPath(mapping.MappedRoot).TrimEnd('/');
+            var shareRoot = Normalize(mapping.ShareRoot).TrimEnd('\\');
+            if (string.IsNullOrWhiteSpace(localRoot) || string.IsNullOrWhiteSpace(shareRoot) ||
+                !TryMatchLocalRoot(localPath, localRoot, out var remainder))
+            {
+                continue;
+            }
+
+            var shareName = shareRoot.Trim('\\')
+                .Split('\\', StringSplitOptions.RemoveEmptyEntries)
+                .LastOrDefault();
+            if (!string.IsNullOrWhiteSpace(shareName))
+            {
+                return string.IsNullOrWhiteSpace(remainder)
+                    ? "/" + shareName
+                    : "/" + shareName + "/" + remainder.Replace('\\', '/');
+            }
+        }
+
+        return localPath;
+    }
+
+    public string? TryResolveNasSearchPath(string path)
+    {
+        var normalized = Normalize(path).TrimEnd('\\');
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        var compactNasScope = TryResolveCompactNasSearchScope(normalized);
+        if (!string.IsNullOrWhiteSpace(compactNasScope))
+        {
+            return compactNasScope;
+        }
+
+        if (normalized.StartsWith("\\") && !normalized.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            return normalized;
+        }
+
+        foreach (var mapping in OrderedPathMappings())
+        {
+            var localRoot = Normalize(OperatingSystem.IsWindows() ? mapping.MappedRoot : NormalizeUnixPath(mapping.MappedRoot)).TrimEnd('\\', '/');
+            var shareRoot = Normalize(mapping.ShareRoot).TrimEnd('\\');
+            if (string.IsNullOrWhiteSpace(localRoot) || string.IsNullOrWhiteSpace(shareRoot) ||
+                !TryMatchLocalRoot(normalized, localRoot, out var remainder))
+            {
+                continue;
+            }
+
+            return string.IsNullOrWhiteSpace(remainder) ? shareRoot : shareRoot + "\\" + remainder;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (var drive in NetUseDrives().OrderByDescending(drive => drive.LocalRoot.Length))
+            {
+                var localRoot = Normalize(drive.LocalRoot).TrimEnd('\\');
+                if (!TryMatchLocalRoot(normalized, localRoot, out var remainder))
+                {
+                    continue;
+                }
+
+                var remoteParts = Normalize(drive.Remote).Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+                if (remoteParts.Length < 2)
+                {
+                    continue;
+                }
+
+                var shareRoot = "\\" + remoteParts[^1];
+                return string.IsNullOrWhiteSpace(remainder) ? shareRoot : shareRoot + "\\" + remainder;
+            }
+        }
+
+        if (normalized.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            var segments = normalized.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            return segments.Length >= 2 ? "\\" + string.Join("\\", segments.Skip(1)) : null;
+        }
+
+        return null;
+    }
+
+    private string? TryResolveCompactNasSearchScope(string path)
+    {
+        // Folder scopes are stored without their leading slash so they can be
+        // compared against Qsirch result paths. Expand only names that identify
+        // a configured or mapped network share; never reinterpret local paths.
+        if (path.StartsWith('\\') || path.StartsWith('/') || path.Contains(':'))
+        {
+            return null;
+        }
+
+        var segments = path.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+        {
+            return null;
+        }
+
+        var shareName = segments[0];
+        var isKnownShare = OrderedPathMappings().Any(mapping =>
+            string.Equals(
+                Normalize(mapping.ShareRoot).Trim('\\')
+                    .Split('\\', StringSplitOptions.RemoveEmptyEntries)
+                    .LastOrDefault(),
+                shareName,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (!isKnownShare && OperatingSystem.IsWindows())
+        {
+            isKnownShare = NetUseDrives().Any(drive =>
+                string.Equals(
+                    Normalize(drive.Remote).Trim('\\')
+                        .Split('\\', StringSplitOptions.RemoveEmptyEntries)
+                        .LastOrDefault(),
+                    shareName,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
+        return isKnownShare ? "\\" + string.Join("\\", segments) : null;
     }
 
     public string? TryResolveUnc(SearchResult result)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return TryResolve(result);
+        }
+
         var savedPath = Normalize(result.ResolvedPath);
         if (savedPath.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
         {
@@ -301,20 +478,27 @@ public sealed class PathMapper(AppConfig config)
     public static bool IsValidManualMapping(PathMapping mapping, out string error)
     {
         var source = Normalize(mapping.ShareRoot);
-        var target = Normalize(mapping.MappedRoot);
+        var target = OperatingSystem.IsWindows() ? Normalize(mapping.MappedRoot) : NormalizeUnixPath(mapping.MappedRoot);
         if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(target))
         {
-            error = "Each path mapping needs both a Qsirch share path and a Windows path.";
+            error = "Each path mapping needs both a NAS share path and a local path.";
             return false;
         }
         if (!source.StartsWith('\\'))
         {
-            error = "A Qsirch share path must begin with a backslash, for example \\Shared.";
+            error = "A NAS share path must begin with a backslash, for example \\Shared.";
             return false;
+        }
+        if (!OperatingSystem.IsWindows() && Path.IsPathFullyQualified(target) && !target.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            error = "";
+            return true;
         }
         if (!Regex.IsMatch(target, @"^(?:[A-Za-z]:\\?|\\\\[^\\]+\\[^\\]+)"))
         {
-            error = "A Windows path must be a drive such as X:\\ or a UNC path such as \\server\\share.";
+            error = OperatingSystem.IsWindows()
+                ? "A local path must be a drive such as X:\\ or a UNC path such as \\server\\share."
+                : "A Linux local path must be an absolute mount path such as /mnt/shared.";
             return false;
         }
 
@@ -375,12 +559,7 @@ public sealed class PathMapper(AppConfig config)
             return null;
         }
 
-        var host = config.Host.Trim().Trim('\\', '/');
-        if (host.Contains("://", StringComparison.OrdinalIgnoreCase) &&
-            Uri.TryCreate(host, UriKind.Absolute, out var uri))
-        {
-            host = uri.Host;
-        }
+        var host = NasIdentity.NormalizeHost(config.Host);
         if (string.IsNullOrWhiteSpace(host) || host.IndexOfAny(['\\', '/', '?', '#']) >= 0)
         {
             return null;
@@ -393,7 +572,7 @@ public sealed class PathMapper(AppConfig config)
             return null;
         }
 
-        return PreferMappedServerName(@"\\" + host + "\\" + string.Join("\\", segments));
+        return PreferMappedServerName(NasIdentity.BuildUncPath(host, string.Join("\\", segments)));
     }
 
     private static string? ResolveFromMappedDrives(string qpath)
@@ -593,6 +772,26 @@ public sealed class PathMapper(AppConfig config)
         return false;
     }
 
+    private static bool TryMatchLocalRoot(string path, string root, out string rest)
+    {
+        path = Normalize(path).TrimEnd('\\', '/');
+        root = Normalize(root).TrimEnd('\\', '/');
+        if (path.Equals(root, StringComparison.OrdinalIgnoreCase))
+        {
+            rest = "";
+            return true;
+        }
+
+        if (path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase))
+        {
+            rest = path[(root.Length + 1)..];
+            return true;
+        }
+
+        rest = "";
+        return false;
+    }
+
     private static IEnumerable<string> CandidateSharePrefixes(string shareName)
     {
         yield return shareName;
@@ -603,6 +802,106 @@ public sealed class PathMapper(AppConfig config)
     {
         root = root.TrimEnd('\\') + "\\";
         return string.IsNullOrWhiteSpace(rest) ? root : Path.Combine(root, rest);
+    }
+
+    private string ResolveLinuxPath(string path)
+    {
+        var remotePath = Normalize(path);
+
+        // A concise NAS path such as \Shared\Clients is deliberately accepted on
+        // Linux. NormalizeUnixPath turns it into /Shared/Clients, which otherwise
+        // looks like a local absolute path and bypasses the configured CIFS mount.
+        // Resolve that NAS form before considering genuine Unix paths such as
+        // /home/alex/Documents.
+        if (remotePath.StartsWith('\\') && !remotePath.StartsWith("//", StringComparison.Ordinal))
+        {
+            foreach (var mapping in OrderedPathMappings())
+            {
+                var target = NormalizeUnixPath(mapping.MappedRoot).TrimEnd('/');
+                var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
+                if (!Path.IsPathFullyQualified(target) || target.StartsWith("//", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(source))
+                {
+                    continue;
+                }
+
+                foreach (var prefix in CandidateMappingPrefixes(source))
+                {
+                    if (TryMatchPathRoot(remotePath, prefix, out var rest))
+                    {
+                        return CombineUnixRoot(target, rest);
+                    }
+                }
+            }
+        }
+
+        var localPath = NormalizeUnixPath(path);
+        if (localPath.StartsWith("/", StringComparison.Ordinal) && !localPath.StartsWith("//", StringComparison.Ordinal))
+        {
+            foreach (var mapping in OrderedPathMappings())
+            {
+                var target = NormalizeUnixPath(mapping.MappedRoot).TrimEnd('/');
+                var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
+                var shareName = source.Trim('\\')
+                    .Split('\\', StringSplitOptions.RemoveEmptyEntries)
+                    .LastOrDefault();
+                if (!Path.IsPathFullyQualified(target) || target.StartsWith("//", StringComparison.Ordinal) ||
+                    string.IsNullOrWhiteSpace(shareName) ||
+                    !TryMatchLinuxShareAlias(localPath, shareName, out var rest))
+                {
+                    continue;
+                }
+
+                return CombineUnixRoot(target, rest);
+            }
+        }
+        if (Path.IsPathFullyQualified(localPath) && !localPath.StartsWith("//", StringComparison.Ordinal))
+        {
+            return localPath;
+        }
+
+        foreach (var mapping in OrderedPathMappings())
+        {
+            var target = NormalizeUnixPath(mapping.MappedRoot).TrimEnd('/');
+            var source = Normalize(mapping.ShareRoot).TrimEnd('\\');
+            if (!Path.IsPathFullyQualified(target) || target.StartsWith("//", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(source))
+            {
+                continue;
+            }
+
+            foreach (var prefix in CandidateMappingPrefixes(source))
+            {
+                if (TryMatchPathRoot(remotePath, prefix, out var rest))
+                {
+                    return CombineUnixRoot(target, rest);
+                }
+            }
+        }
+
+        return path;
+    }
+
+    private static string CombineUnixRoot(string root, string rest)
+    {
+        var segments = rest.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 0 ? root : Path.Combine([root, .. segments]);
+    }
+
+    private static bool TryMatchLinuxShareAlias(string path, string shareName, out string rest)
+    {
+        var alias = "/" + shareName.Trim('/');
+        if (path.Equals(alias, StringComparison.OrdinalIgnoreCase))
+        {
+            rest = "";
+            return true;
+        }
+        if (path.StartsWith(alias + "/", StringComparison.OrdinalIgnoreCase))
+        {
+            rest = path[(alias.Length + 1)..];
+            return true;
+        }
+
+        rest = "";
+        return false;
     }
 
     private static IReadOnlyList<MappedDrive> NetUseDrives()
@@ -659,6 +958,8 @@ public sealed class PathMapper(AppConfig config)
     }
 
     private static string Normalize(string value) => (value ?? "").Replace('/', '\\').Trim();
+
+    private static string NormalizeUnixPath(string value) => (value ?? "").Replace('\\', '/').Trim();
 
     private sealed record MappedDrive(string LocalRoot, string Remote);
 }

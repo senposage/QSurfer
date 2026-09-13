@@ -184,15 +184,6 @@ performance behavior, and corresponding menu/keyboard actions are present.
 
 ## 1.1 Hardening Focus
 
-- **Local search delegation:** searches rooted on `C:\` and standard local user
-  folders should use Windows search and Explorer facilities rather than the
-  NAS/Qsirch pipeline. NAS searches remain Qsirch-backed.
-- **Explorer path memory and autocomplete:** cache recently visited, valid
-  browse locations per user and offer Explorer-style address suggestions as
-  the user types, without probing unavailable NAS paths on every keystroke.
-- **Preview responsiveness:** reduce native preview-handler startup hesitation,
-  preserve a warm host when safe, and make slow or unsupported handlers fail
-  clearly without stalling the results workspace.
 - **Live diagnostics review:** collect and review the separate client/session
   and search logs after a normal office work session. Resolve exceptions,
   repeated authentication, slow operations, UI stalls, and noisy logging before

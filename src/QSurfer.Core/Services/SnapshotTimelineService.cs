@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using QSurfer.Core.Models;
@@ -6,7 +7,7 @@ using QSurfer.Core.Models;
 namespace QSurfer.Core.Services;
 
 /// <summary>
-/// Reads QNAP's exposed @Recently-Snapshot folders through the user's normal SMB access.
+/// Reads exposed @Recently-Snapshot folders through the user's normal SMB access.
 /// Snapshot folders are treated as read-only sources; recovery makes a separate copy or explicitly restores a selected version.
 /// </summary>
 public sealed class SnapshotTimelineService(AppConfig config)
@@ -27,6 +28,7 @@ public sealed class SnapshotTimelineService(AppConfig config)
 
     private SnapshotTimeline Load(string path, bool isFolder, CancellationToken cancellationToken)
     {
+        var started = Stopwatch.StartNew();
         var candidates = SnapshotCandidates(path).ToList();
         foreach (var candidate in candidates)
         {
@@ -36,37 +38,51 @@ public sealed class SnapshotTimelineService(AppConfig config)
                 continue;
             }
 
-            var versions = new List<SnapshotVersion>();
-            foreach (var snapshotDirectory in Directory.EnumerateDirectories(candidate.SnapshotRoot))
+            var snapshotDirectories = Directory.EnumerateDirectories(candidate.SnapshotRoot)
+                .Select(directory => new { Directory = directory, Name = Path.GetFileName(directory) })
+                .Where(snapshot => TryParseSnapshotTimestamp(snapshot.Name, out _))
+                .ToList();
+            var versions = new ConcurrentBag<SnapshotVersion>();
+            var snapshots = new ConcurrentQueue<(string Directory, string Name)>(
+                snapshotDirectories.Select(snapshot => (snapshot.Directory, snapshot.Name)));
+            var workers = new Task[Math.Min(8, snapshots.Count)];
+            for (var index = 0; index < workers.Length; index++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var snapshotName = Path.GetFileName(snapshotDirectory);
-                if (!TryParseSnapshotTimestamp(snapshotName, out var snapshotTime))
+                // Metadata reads over SMB are blocking. Provision a small fixed
+                // set of workers immediately instead of waiting for thread-pool ramp-up.
+                workers[index] = Task.Factory.StartNew(() =>
                 {
-                    continue;
-                }
+                    while (snapshots.TryDequeue(out var snapshot))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!TryParseSnapshotTimestamp(snapshot.Name, out var snapshotTime))
+                        {
+                            continue;
+                        }
 
-                var snapshotPath = Combine(snapshotDirectory, candidate.RelativePath);
-                if (isFolder ? !Directory.Exists(snapshotPath) : !File.Exists(snapshotPath))
-                {
-                    continue;
-                }
+                        var snapshotPath = Combine(snapshot.Directory, candidate.RelativePath);
+                        if (!TryReadSnapshotMetadata(snapshotPath, isFolder, out var metadata))
+                        {
+                            continue;
+                        }
 
-                var metadata = ReadMetadata(snapshotPath, isFolder);
-                versions.Add(new SnapshotVersion(
-                    snapshotName,
-                    snapshotTime,
-                    snapshotPath,
-                    isFolder,
-                    metadata.Modified,
-                    metadata.Size));
+                        versions.Add(new SnapshotVersion(
+                            snapshot.Name,
+                            snapshotTime,
+                            snapshotPath,
+                            isFolder,
+                            metadata.Modified,
+                            metadata.Size));
+                    }
+                }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             }
+            Task.WaitAll(workers, cancellationToken);
 
             var ordered = versions
                 .OrderByDescending(version => version.SnapshotTime)
                 .ThenByDescending(version => version.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            AppLogger.Info("timeline", $"source=\"{path}\" root=\"{candidate.SnapshotRoot}\" versions={ordered.Count}");
+            AppLogger.Info("timeline", $"source=\"{path}\" root=\"{candidate.SnapshotRoot}\" snapshots={snapshotDirectories.Count} versions={ordered.Count} elapsed={started.ElapsedMilliseconds}ms");
             return new SnapshotTimeline(path, candidate.SnapshotRoot, ordered);
         }
 
@@ -170,6 +186,15 @@ public sealed class SnapshotTimelineService(AppConfig config)
 
     private IEnumerable<SnapshotCandidate> SnapshotCandidates(string inputPath)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            foreach (var candidate in LinuxSnapshotCandidates(inputPath))
+            {
+                yield return candidate;
+            }
+            yield break;
+        }
+
         var path = Normalize(inputPath);
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -182,6 +207,49 @@ public sealed class SnapshotTimelineService(AppConfig config)
             if (seen.Add(candidate.SnapshotRoot))
             {
                 yield return candidate;
+            }
+        }
+    }
+
+    private IEnumerable<SnapshotCandidate> LinuxSnapshotCandidates(string inputPath)
+    {
+        var localPath = NormalizeLinuxPath(inputPath);
+        var remotePath = Normalize(inputPath);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mapping in config.PathMappings)
+        {
+            var mappedRoot = NormalizeLinuxPath(mapping.MappedRoot).TrimEnd('/');
+            var source = Normalize(mapping.ShareRoot).Trim('\\');
+            if (string.IsNullOrWhiteSpace(mappedRoot) || string.IsNullOrWhiteSpace(source) ||
+                !Path.IsPathFullyQualified(mappedRoot) || mappedRoot.StartsWith("//", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string? relativePath = null;
+            if (LinuxPathStartsWith(localPath, mappedRoot))
+            {
+                relativePath = localPath[mappedRoot.Length..].TrimStart('/');
+            }
+            else
+            {
+                foreach (var prefix in MappingPrefixes(source))
+                {
+                    if (RemotePathStartsWith(remotePath, prefix, out var remainder))
+                    {
+                        relativePath = remainder;
+                        break;
+                    }
+                }
+            }
+
+            if (relativePath != null)
+            {
+                var snapshotRoot = Path.Combine(mappedRoot, SnapshotFolderName);
+                if (seen.Add(snapshotRoot))
+                {
+                    yield return new SnapshotCandidate(snapshotRoot, relativePath);
+                }
             }
         }
     }
@@ -305,6 +373,30 @@ public sealed class SnapshotTimelineService(AppConfig config)
         }
     }
 
+    private static bool TryReadSnapshotMetadata(string path, bool isFolder, out (DateTime Modified, long Size) metadata)
+    {
+        try
+        {
+            FileSystemInfo info = isFolder ? new DirectoryInfo(path) : new FileInfo(path);
+            info.Refresh();
+            if (!info.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = isFolder
+                ? (info.LastWriteTime, 0)
+                : (info.LastWriteTime, ((FileInfo)info).Length);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentOutOfRangeException)
+        {
+            metadata = default;
+            return false;
+        }
+    }
+
     private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(destination);
@@ -383,12 +475,62 @@ public sealed class SnapshotTimelineService(AppConfig config)
                normalizedPath.StartsWith(normalizedRoot + "\\", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string Combine(string root, string rest) =>
-        string.IsNullOrWhiteSpace(rest)
-            ? root.TrimEnd('\\')
-            : Path.Combine(root.TrimEnd('\\') + "\\", rest);
+    private static string Combine(string root, string rest)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return string.IsNullOrWhiteSpace(rest)
+                ? root.TrimEnd('\\')
+                : Path.Combine(root.TrimEnd('\\') + "\\", rest);
+        }
+
+        root = root.TrimEnd('/', '\\');
+        return string.IsNullOrWhiteSpace(rest)
+            ? root
+            : Path.Combine(root, rest.Replace('\\', '/'));
+    }
 
     private static string Normalize(string value) => (value ?? "").Trim().Replace('/', '\\');
+
+    private static string NormalizeLinuxPath(string value) => (value ?? "").Trim().Replace('\\', '/');
+
+    private static bool LinuxPathStartsWith(string path, string root)
+    {
+        path = NormalizeLinuxPath(path).TrimEnd('/');
+        root = NormalizeLinuxPath(root).TrimEnd('/');
+        return path.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+               path.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> MappingPrefixes(string source)
+    {
+        yield return source;
+        var parts = source.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length > 0)
+        {
+            yield return parts[^1];
+            yield return "Shared\\" + parts[^1];
+        }
+    }
+
+    private static bool RemotePathStartsWith(string path, string root, out string remainder)
+    {
+        path = Normalize(path).TrimStart('\\');
+        root = Normalize(root).Trim('\\');
+        if (path.Equals(root, StringComparison.OrdinalIgnoreCase))
+        {
+            remainder = "";
+            return true;
+        }
+        if (path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase))
+        {
+            remainder = path[(root.Length + 1)..];
+            return true;
+        }
+
+        remainder = "";
+        return false;
+    }
 
     private static IReadOnlyList<MappedDrive> ReadMappedDrives()
     {

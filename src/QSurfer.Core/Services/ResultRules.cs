@@ -8,10 +8,12 @@ public sealed class ResultRules
 {
     private readonly AppConfig _config;
     private readonly HashSet<string> _identities;
+    private readonly PathMapper _mapper;
 
     public ResultRules(AppConfig config)
     {
         _config = config;
+        _mapper = new PathMapper(config);
         _identities = CurrentIdentities();
         AppLogger.Info("rules", $"visibility identities={string.Join(", ", _identities.OrderBy(identity => identity))} rules={config.VisibilityRules.Count}");
     }
@@ -91,10 +93,11 @@ public sealed class ResultRules
         }
 
         var matches = new List<(int specificity, string access)>();
+        var candidates = VisibilityPathCandidates(result);
         foreach (var rule in rules)
         {
-            var pattern = Normalize(rule.Pattern);
-            if (!PathCandidates(result).Any(candidate => RuleMatchesPath(candidate, pattern)))
+            var patterns = RulePatternCandidates(rule.Pattern);
+            if (!candidates.Any(candidate => patterns.Any(pattern => RuleMatchesPath(candidate, pattern))))
             {
                 continue;
             }
@@ -111,6 +114,34 @@ public sealed class ResultRules
         }
         var best = matches.Max(x => x.specificity);
         return !matches.Where(x => x.specificity == best).Any(x => x.access.Equals("allow", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private HashSet<string> VisibilityPathCandidates(SearchResult result)
+    {
+        var candidates = PathCandidates(result);
+        AddPathCandidate(candidates, result.WindowsPath);
+        AddPathCandidate(candidates, result.ResolvedPath);
+        AddResolvedPath(candidates, _mapper.TryResolve(result));
+        AddResolvedPath(candidates, _mapper.TryResolveUnc(result));
+        return candidates;
+    }
+
+    private static HashSet<string> RulePatternCandidates(string pattern)
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddPathCandidate(candidates, pattern);
+
+        var normalized = Normalize(pattern).TrimEnd('\\');
+        if (normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = normalized.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+            {
+                AddPathCandidate(candidates, string.Join('\\', parts.Skip(1)));
+            }
+        }
+
+        return candidates;
     }
 
     private int IdentitySpecificity(string identity)
@@ -212,6 +243,14 @@ public sealed class ResultRules
             var withoutShared = path[7..];
             candidates.Add(withoutShared);
             candidates.Add(withoutShared + "\\");
+        }
+    }
+
+    private static void AddResolvedPath(HashSet<string> candidates, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            AddPathCandidate(candidates, path);
         }
     }
 

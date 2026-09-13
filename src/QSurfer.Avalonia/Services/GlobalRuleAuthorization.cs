@@ -1,9 +1,23 @@
 using System.Security.Principal;
+using QSurfer.Core.Services;
 
 namespace QSurfer.Avalonia.Services;
 
 internal static class GlobalRuleAuthorization
 {
+    public static bool CanManageGlobalSettings()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Unix does not have a universal "local administrator" membership.
+            // The deployment config's ownership and ACL are the authority, so a
+            // normal session may manage globals when it can actually update it.
+            return IsUnixRoot() || CanWriteDeploymentConfig();
+        }
+
+        return CanManageGlobalRules();
+    }
+
     public static bool CanManageGlobalRules()
     {
         var status = GetCurrentUserStatus();
@@ -20,7 +34,7 @@ internal static class GlobalRuleAuthorization
         var fallbackName = string.IsNullOrWhiteSpace(Environment.UserName) ? "Windows user unavailable" : Environment.UserName;
         if (!OperatingSystem.IsWindows())
         {
-            return new CurrentUserAccessStatus(fallbackName, false, false, false);
+            return new CurrentUserAccessStatus(fallbackName, false, IsUnixRoot(), false);
         }
         try
         {
@@ -69,6 +83,51 @@ internal static class GlobalRuleAuthorization
                !authority.Equals("NT AUTHORITY", StringComparison.OrdinalIgnoreCase) &&
                !authority.Equals("NT SERVICE", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsUnixRoot()
+    {
+        try
+        {
+            return geteuid() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool CanWriteDeploymentConfig()
+    {
+        try
+        {
+            var configPath = ConfigStore.ConfigPath;
+            if (File.Exists(configPath))
+            {
+                using var stream = new FileStream(configPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+                return true;
+            }
+
+            var directory = Path.GetDirectoryName(configPath);
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            {
+                return false;
+            }
+
+            var probe = Path.Combine(directory, $".qsurfer-write-test-{Guid.NewGuid():N}");
+            using (File.Open(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+            }
+            File.Delete(probe);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc")]
+    private static extern uint geteuid();
 }
 
 internal sealed record CurrentUserAccessStatus(
@@ -79,7 +138,11 @@ internal sealed record CurrentUserAccessStatus(
 {
     public string DisplayStatus => IsDomainAdmin
         ? "Domain Admin"
+        : !OperatingSystem.IsWindows() && IsLocalAdministrator
+            ? "Elevated administrator"
         : IsLocalAdministrator
-            ? "Local administrator (not a Domain Admin)"
+            ? IsDomainAccount
+                ? "Local administrator (not a Domain Admin)"
+                : "Local administrator"
             : "Standard user";
 }

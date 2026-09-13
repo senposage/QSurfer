@@ -5,12 +5,13 @@ namespace QSurfer.Avalonia;
 
 public sealed partial class ConfirmationWindow : Window
 {
-    public ConfirmationWindow(string title, string message, string action)
+    public ConfirmationWindow(string title, string message, string action, string cancelAction = "Cancel")
     {
         InitializeComponent();
         Title = title;
         MessageText.Text = message;
         ConfirmButton.Content = action;
+        CancelButton.Content = cancelAction;
     }
 
     private void Confirm_Click(object? sender, RoutedEventArgs e) => Close(true);

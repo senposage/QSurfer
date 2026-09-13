@@ -16,10 +16,7 @@ public sealed class HistoryStore
     public HistoryStore(AppConfig config)
     {
         _config = config;
-        var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var directory = string.IsNullOrWhiteSpace(localData)
-            ? Path.Combine(ConfigStore.PortableRoot, "data", "cache")
-            : Path.Combine(localData, "QSurfer", "cache");
+        var directory = UserDataPaths.Subdirectory("cache");
         var path = Path.Combine(directory, $"{Environment.MachineName.ToUpperInvariant()}.history.sqlite");
         _connectionString = new SqliteConnectionStringBuilder
         {
@@ -53,12 +50,23 @@ public sealed class HistoryStore
                 using var command = connection.CreateCommand();
                 command.CommandText = "SELECT query FROM recent_searches WHERE machine_id = $machine AND user_id = $user ORDER BY used_at DESC LIMIT $limit;";
                 BindScope(command);
-                command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 50));
+                var requestedLimit = Math.Clamp(limit, 1, 50);
+                command.Parameters.AddWithValue("$limit", Math.Min(requestedLimit * 4, 50));
                 using var reader = command.ExecuteReader();
                 var results = new List<string>();
                 while (reader.Read())
                 {
-                    results.Add(reader.GetString(0));
+                    var query = reader.GetString(0);
+                    if (results.Contains(query, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    results.Add(query);
+                    if (results.Count == requestedLimit)
+                    {
+                        break;
+                    }
                 }
                 return results;
             }
@@ -83,19 +91,44 @@ public sealed class HistoryStore
             {
                 using var connection = Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = """
-                    INSERT INTO recent_searches (machine_id, user_id, query, used_at)
-                    VALUES ($machine, $user, $query, $used)
-                    ON CONFLICT(machine_id, user_id, query) DO UPDATE SET used_at = excluded.used_at;
-                    """;
                 BindScope(command);
                 command.Parameters.AddWithValue("$query", text);
+                command.CommandText = "DELETE FROM recent_searches WHERE machine_id = $machine AND user_id = $user AND query = $query COLLATE NOCASE;";
+                command.ExecuteNonQuery();
+
+                command.CommandText = "INSERT INTO recent_searches (machine_id, user_id, query, used_at) VALUES ($machine, $user, $query, $used);";
                 command.Parameters.AddWithValue("$used", DateTime.UtcNow.Ticks);
                 command.ExecuteNonQuery();
             }
             catch (Exception ex)
             {
                 AppLogger.Error("history", ex, "recent search update failed");
+            }
+        }
+    }
+
+    public void DeleteRecentSearch(string query)
+    {
+        var text = query.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            try
+            {
+                using var connection = Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "DELETE FROM recent_searches WHERE machine_id = $machine AND user_id = $user AND query = $query COLLATE NOCASE;";
+                BindScope(command);
+                command.Parameters.AddWithValue("$query", text);
+                command.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("history", ex, "recent search delete failed");
             }
         }
     }
@@ -108,13 +141,31 @@ public sealed class HistoryStore
             {
                 using var connection = Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = "SELECT id, name, query FROM saved_searches WHERE machine_id = $machine AND user_id = $user ORDER BY name COLLATE NOCASE;";
+                command.CommandText = """
+                    SELECT id, name, query, scope_paths_json, excluded_scope_paths_json, type_names_json,
+                           view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents
+                    FROM saved_searches
+                    WHERE machine_id = $machine AND user_id = $user
+                    ORDER BY name COLLATE NOCASE;
+                    """;
                 BindScope(command);
                 using var reader = command.ExecuteReader();
                 var results = new List<SavedSearch>();
                 while (reader.Read())
                 {
-                    results.Add(new SavedSearch(reader.GetInt64(0), reader.GetString(1), reader.GetString(2)));
+                    results.Add(new SavedSearch(
+                        reader.GetInt64(0),
+                        reader.GetString(1),
+                        reader.GetString(2),
+                        ParseGroups(reader.IsDBNull(3) ? null : reader.GetString(3)),
+                        ParseGroups(reader.IsDBNull(4) ? null : reader.GetString(4)),
+                        ParseGroups(reader.IsDBNull(5) ? null : reader.GetString(5)),
+                        reader.IsDBNull(6) ? "details" : reader.GetString(6),
+                        reader.IsDBNull(7) ? "recent:desc" : reader.GetString(7),
+                        ReadTicks(reader, 8),
+                        ReadTicks(reader, 9) ?? DateTime.Today,
+                        !reader.IsDBNull(10) && reader.GetInt64(10) != 0,
+                        !reader.IsDBNull(11) && reader.GetInt64(11) != 0));
                 }
                 return results;
             }
@@ -126,7 +177,7 @@ public sealed class HistoryStore
         }
     }
 
-    public bool SaveSearch(string name, string query)
+    public long? SaveSearch(SavedSearch search)
     {
         lock (_gate)
         {
@@ -135,20 +186,82 @@ public sealed class HistoryStore
                 using var connection = Open();
                 using var command = connection.CreateCommand();
                 command.CommandText = """
-                    INSERT INTO saved_searches (machine_id, user_id, name, query, saved_at)
-                    VALUES ($machine, $user, $name, $query, $saved)
-                    ON CONFLICT(machine_id, user_id, query) DO UPDATE SET name = excluded.name, saved_at = excluded.saved_at;
+                    INSERT INTO saved_searches (
+                      machine_id, user_id, name, query, scope_paths_json, excluded_scope_paths_json, type_names_json,
+                      view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents, saved_at)
+                    VALUES (
+                      $machine, $user, $name, $query, $scopePaths, $excludedScopePaths, $typeNames,
+                      $viewKey, $sortValue, $dateFrom, $dateTo, $exactMatch, $searchContents, $saved)
+                    ;
                     """;
                 BindScope(command);
-                command.Parameters.AddWithValue("$name", name.Trim());
-                command.Parameters.AddWithValue("$query", query.Trim());
+                command.Parameters.AddWithValue("$name", search.Name.Trim());
+                command.Parameters.AddWithValue("$query", search.Query.Trim());
+                command.Parameters.AddWithValue("$scopePaths", JsonSerializer.Serialize(search.ScopePaths));
+                command.Parameters.AddWithValue("$excludedScopePaths", JsonSerializer.Serialize(search.ExcludedScopePaths));
+                command.Parameters.AddWithValue("$typeNames", JsonSerializer.Serialize(search.TypeNames));
+                command.Parameters.AddWithValue("$viewKey", search.ViewKey);
+                command.Parameters.AddWithValue("$sortValue", search.SortValue);
+                command.Parameters.AddWithValue("$dateFrom", search.DateFrom?.Ticks ?? 0L);
+                command.Parameters.AddWithValue("$dateTo", search.DateTo?.Ticks ?? 0L);
+                command.Parameters.AddWithValue("$exactMatch", search.ExactMatch ? 1 : 0);
+                command.Parameters.AddWithValue("$searchContents", search.SearchContents ? 1 : 0);
                 command.Parameters.AddWithValue("$saved", DateTime.UtcNow.Ticks);
                 command.ExecuteNonQuery();
-                return true;
+                command.CommandText = "SELECT last_insert_rowid();";
+                return Convert.ToInt64(command.ExecuteScalar());
             }
             catch (Exception ex)
             {
                 AppLogger.Error("history", ex, "saved search update failed");
+                return null;
+            }
+        }
+    }
+
+    public bool UpdateSavedSearch(long id, SavedSearch search)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                using var connection = Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE saved_searches
+                    SET name = $name,
+                        query = $query,
+                        scope_paths_json = $scopePaths,
+                        excluded_scope_paths_json = $excludedScopePaths,
+                        type_names_json = $typeNames,
+                        view_key = $viewKey,
+                        sort_value = $sortValue,
+                        date_from_ticks = $dateFrom,
+                        date_to_ticks = $dateTo,
+                        exact_match = $exactMatch,
+                        search_contents = $searchContents,
+                        saved_at = $saved
+                    WHERE id = $id AND machine_id = $machine AND user_id = $user;
+                    """;
+                BindScope(command);
+                command.Parameters.AddWithValue("$id", id);
+                command.Parameters.AddWithValue("$name", search.Name.Trim());
+                command.Parameters.AddWithValue("$query", search.Query.Trim());
+                command.Parameters.AddWithValue("$scopePaths", JsonSerializer.Serialize(search.ScopePaths));
+                command.Parameters.AddWithValue("$excludedScopePaths", JsonSerializer.Serialize(search.ExcludedScopePaths));
+                command.Parameters.AddWithValue("$typeNames", JsonSerializer.Serialize(search.TypeNames));
+                command.Parameters.AddWithValue("$viewKey", search.ViewKey);
+                command.Parameters.AddWithValue("$sortValue", search.SortValue);
+                command.Parameters.AddWithValue("$dateFrom", search.DateFrom?.Ticks ?? 0L);
+                command.Parameters.AddWithValue("$dateTo", search.DateTo?.Ticks ?? 0L);
+                command.Parameters.AddWithValue("$exactMatch", search.ExactMatch ? 1 : 0);
+                command.Parameters.AddWithValue("$searchContents", search.SearchContents ? 1 : 0);
+                command.Parameters.AddWithValue("$saved", DateTime.UtcNow.Ticks);
+                return command.ExecuteNonQuery() == 1;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("history", ex, "saved search overwrite failed");
                 return false;
             }
         }
@@ -512,14 +625,100 @@ public sealed class HistoryStore
               user_id TEXT NOT NULL,
               name TEXT NOT NULL,
               query TEXT NOT NULL,
-              saved_at INTEGER NOT NULL,
-              UNIQUE (machine_id, user_id, query)
+              scope_paths_json TEXT NOT NULL DEFAULT '[]',
+              excluded_scope_paths_json TEXT NOT NULL DEFAULT '[]',
+              type_names_json TEXT NOT NULL DEFAULT '[]',
+              view_key TEXT NOT NULL DEFAULT 'details',
+              sort_value TEXT NOT NULL DEFAULT 'recent:desc',
+              date_from_ticks INTEGER NOT NULL DEFAULT 0,
+              date_to_ticks INTEGER NOT NULL DEFAULT 0,
+              exact_match INTEGER NOT NULL DEFAULT 0,
+              search_contents INTEGER NOT NULL DEFAULT 0,
+              saved_at INTEGER NOT NULL
             );
             """;
         command.ExecuteNonQuery();
         EnsureColumn(connection, "history_results", "resolved_path", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "saved_searches", "scope_paths_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "saved_searches", "excluded_scope_paths_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "saved_searches", "type_names_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "saved_searches", "view_key", "TEXT NOT NULL DEFAULT 'details'");
+        EnsureColumn(connection, "saved_searches", "sort_value", "TEXT NOT NULL DEFAULT 'recent:desc'");
+        EnsureColumn(connection, "saved_searches", "date_from_ticks", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "saved_searches", "date_to_ticks", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "saved_searches", "exact_match", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "saved_searches", "search_contents", "INTEGER NOT NULL DEFAULT 0");
+        MigrateSavedSearchQueryIdentity(connection);
         _initialized = true;
         return connection;
+    }
+
+    private static void MigrateSavedSearchQueryIdentity(SqliteConnection connection)
+    {
+        var indexes = new List<string>();
+        using (var listIndexes = connection.CreateCommand())
+        {
+            listIndexes.CommandText = "PRAGMA index_list('saved_searches');";
+            using var reader = listIndexes.ExecuteReader();
+            while (reader.Read())
+            {
+                if (reader.GetInt64(2) != 0)
+                {
+                    indexes.Add(reader.GetString(1));
+                }
+            }
+        }
+
+        var usesLegacyQueryIdentity = indexes.Any(index =>
+        {
+            using var columnsCommand = connection.CreateCommand();
+            columnsCommand.CommandText = $"PRAGMA index_info('{index.Replace("'", "''")}');";
+            using var reader = columnsCommand.ExecuteReader();
+            var columns = new List<string>();
+            while (reader.Read())
+            {
+                columns.Add(reader.GetString(2));
+            }
+
+            return columns.SequenceEqual(["machine_id", "user_id", "query"], StringComparer.OrdinalIgnoreCase);
+        });
+        if (!usesLegacyQueryIdentity)
+        {
+            return;
+        }
+
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            CREATE TABLE saved_searches_rebuilt (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              machine_id TEXT NOT NULL,
+              user_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              query TEXT NOT NULL,
+              scope_paths_json TEXT NOT NULL DEFAULT '[]',
+              excluded_scope_paths_json TEXT NOT NULL DEFAULT '[]',
+              type_names_json TEXT NOT NULL DEFAULT '[]',
+              view_key TEXT NOT NULL DEFAULT 'details',
+              sort_value TEXT NOT NULL DEFAULT 'recent:desc',
+              date_from_ticks INTEGER NOT NULL DEFAULT 0,
+              date_to_ticks INTEGER NOT NULL DEFAULT 0,
+              exact_match INTEGER NOT NULL DEFAULT 0,
+              search_contents INTEGER NOT NULL DEFAULT 0,
+              saved_at INTEGER NOT NULL
+            );
+            INSERT INTO saved_searches_rebuilt
+              SELECT id, machine_id, user_id, name, query, scope_paths_json, excluded_scope_paths_json,
+                     type_names_json, view_key, sort_value, date_from_ticks, date_to_ticks, exact_match,
+                     search_contents, saved_at
+              FROM saved_searches;
+            DROP TABLE saved_searches;
+            ALTER TABLE saved_searches_rebuilt RENAME TO saved_searches;
+            """;
+        command.ExecuteNonQuery();
+        transaction.Commit();
+        AppLogger.Info("history", "migrated saved searches to allow duplicate query text");
     }
 
     private static SearchResult ReadResult(SqliteDataReader reader)
@@ -607,6 +806,19 @@ public sealed class HistoryStore
     }
 
     private static string RawJson(SearchResult result) => result.Raw.ValueKind == JsonValueKind.Object ? result.Raw.GetRawText() : "{}";
+
+    private static DateTime? ReadTicks(SqliteDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var ticks = reader.GetInt64(ordinal);
+        return ticks > DateTime.MinValue.Ticks && ticks <= DateTime.MaxValue.Ticks
+            ? new DateTime(ticks)
+            : null;
+    }
 
     private static IReadOnlyList<string> ParseGroups(string? value)
     {

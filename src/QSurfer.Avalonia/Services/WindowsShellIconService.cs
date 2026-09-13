@@ -62,6 +62,62 @@ internal static class WindowsShellIconService
         }
     }
 
+    public static AvaloniaBitmap? PathIcon(string path)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var info = new ShellFileInfo();
+        var flags = ShellFileInfoFlags.Icon | ShellFileInfoFlags.LargeIcon;
+        var result = SHGetFileInfo(path, FileAttributes.Normal, ref info, (uint)Marshal.SizeOf<ShellFileInfo>(), flags);
+        if (result == IntPtr.Zero || info.IconHandle == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            return ToBitmap(info.IconHandle);
+        }
+        finally
+        {
+            DestroyIcon(info.IconHandle);
+        }
+    }
+
+    public static AvaloniaBitmap? DriveIcon(DriveType driveType)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        var stockIconId = driveType switch
+        {
+            DriveType.Network => StockIconDriveNetwork,
+            DriveType.Removable => StockIconDriveRemovable,
+            DriveType.CDRom => StockIconDriveCd,
+            _ => StockIconDriveFixed,
+        };
+        var info = new StockIconInfo { Size = (uint)Marshal.SizeOf<StockIconInfo>() };
+        var result = SHGetStockIconInfo(stockIconId, ShellStockIconFlags.Icon | ShellStockIconFlags.LargeIcon, ref info);
+        if (result < 0 || info.IconHandle == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            return ToBitmap(info.IconHandle);
+        }
+        finally
+        {
+            DestroyIcon(info.IconHandle);
+        }
+    }
+
     private static AvaloniaBitmap? ToBitmap(IntPtr iconHandle)
     {
         try
@@ -133,4 +189,8 @@ internal static class WindowsShellIconService
     }
 
     private const uint StockIconRecyclerFull = 32;
+    private const uint StockIconDriveRemovable = 7;
+    private const uint StockIconDriveFixed = 8;
+    private const uint StockIconDriveNetwork = 9;
+    private const uint StockIconDriveCd = 11;
 }

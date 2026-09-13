@@ -12,8 +12,7 @@ public static class PreviewFileStager
     private const long MaximumFileBytes = 64L * 1024 * 1024;
     private const long MaximumCacheBytes = 256L * 1024 * 1024;
     private static readonly SemaphoreSlim CacheGate = new(1, 1);
-    private static readonly string CacheDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QSurfer", "preview-cache");
+    private static readonly string CacheDirectory = UserDataPaths.Subdirectory("preview-cache");
 
     public static async Task<string> StageIfRemoteAsync(string sourcePath, CancellationToken cancellationToken)
     {
@@ -87,6 +86,12 @@ public static class PreviewFileStager
     private static bool IsRemotePath(string path)
     {
         if (path.StartsWith("\\\\", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (OperatingSystem.IsLinux() &&
+            path.Replace('\\', '/').Contains("/qsurfer-mounts/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

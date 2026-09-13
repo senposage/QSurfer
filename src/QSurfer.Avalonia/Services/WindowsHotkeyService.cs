@@ -27,6 +27,11 @@ internal sealed class WindowsHotkeyService : IDisposable
 
     public bool Start(string shortcut)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(shortcut))
         {
             return true;
@@ -58,6 +63,13 @@ internal sealed class WindowsHotkeyService : IDisposable
 
     public HotkeyRegistrationResult Configure(string shortcut)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return string.IsNullOrWhiteSpace(shortcut)
+                ? HotkeyRegistrationResult.Success("")
+                : HotkeyRegistrationResult.Unavailable("Global shortcuts are currently available on Windows only.");
+        }
+
         if (string.IsNullOrWhiteSpace(shortcut))
         {
             lock (_gate)
@@ -78,7 +90,7 @@ internal sealed class WindowsHotkeyService : IDisposable
         }
         if (!TryParse(shortcut, out var parsed, out var normalized))
         {
-            return HotkeyRegistrationResult.Invalid("Use a shortcut such as Ctrl+S, Alt+Q, or Ctrl+Shift+F.");
+            return HotkeyRegistrationResult.Invalid("Use a shortcut such as Ctrl+Alt+Q, Alt+Q, or Ctrl+Shift+F.");
         }
 
         lock (_gate)
@@ -114,7 +126,7 @@ internal sealed class WindowsHotkeyService : IDisposable
             return true;
         }
 
-        error = "Use a shortcut such as Ctrl+S, Alt+Q, or Ctrl+Shift+F.";
+        error = "Use a shortcut such as Ctrl+Alt+Q, Alt+Q, or Ctrl+Shift+F.";
         return false;
     }
 

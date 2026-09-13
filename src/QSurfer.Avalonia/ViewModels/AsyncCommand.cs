@@ -2,13 +2,17 @@ using System.Windows.Input;
 
 namespace QSurfer.Avalonia.ViewModels;
 
-public sealed class AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null) : ICommand
+public sealed class AsyncCommand(
+    Func<Task> execute,
+    Func<bool>? canExecute = null,
+    bool allowsReplacementWhileExecuting = false) : ICommand
 {
     private bool _isExecuting;
 
     public event EventHandler? CanExecuteChanged;
 
-    public bool CanExecute(object? parameter) => !_isExecuting && (canExecute?.Invoke() ?? true);
+    public bool CanExecute(object? parameter) =>
+        (allowsReplacementWhileExecuting || !_isExecuting) && (canExecute?.Invoke() ?? true);
 
     public async void Execute(object? parameter) => await ExecuteAsync();
 

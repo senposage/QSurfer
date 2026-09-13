@@ -2,7 +2,7 @@
 
 This is a clean-room interoperability reference for QSurfer. It records observed
 request and response behavior from Qsirch diagnostics and the installed Windows
-client. Do not copy QNAP implementation code into this project.
+client. Do not copy vendor implementation code into this project.
 
 ## API Root And Authentication
 

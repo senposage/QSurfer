@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using Avalonia.Threading;
 using Avalonia.Media.Imaging;
 using QSurfer.Core.Models;
@@ -13,10 +14,19 @@ namespace QSurfer.Avalonia.ViewModels;
 
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
-    private readonly AppConfig _config = ConfigStore.Load();
+    private const string HomeNavigationPath = "qsurfer://home";
+    private const int AddressSuggestionLimit = 12;
+    private const int AddressPathBranchLimit = 8;
+    private const int InitialAddressSuggestionDebounceMilliseconds = 750;
+    private const int NestedAddressSuggestionDebounceMilliseconds = 50;
+    private static readonly TimeSpan AddressDirectorySearchCacheLifetime = TimeSpan.FromMinutes(2);
+    private static readonly Regex TrailingScopeClause = new(
+        @"(?:^|\s)in:(?:""(?<quoted>[^""]+)""|(?<path>.+))\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private readonly AppConfig _config;
     private readonly IReadOnlyList<FileTypeFilter> _fileTypes;
     private readonly HistoryStore _history;
-    private QsirchClient _client;
+    private ISearchProvider _client;
     private PathMapper _mapper;
     private ResultRules _rules;
     private readonly NasFileBrowser _browser = new();
@@ -27,8 +37,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private readonly HashSet<string> _iconLoadsInFlight = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _iconLoadGate = new(3, 3);
     private CancellationTokenSource? _browseCancellation;
+    private readonly Dictionary<NavigationTreeNode, CancellationTokenSource> _navigationLoadCancellations = [];
     private readonly List<string> _browserHistory = [];
     private readonly List<BrowserItem> _browserClipboard = [];
+    private readonly List<SearchTabViewModel> _pinnedTabsAwaitingReload = [];
     private bool _browserClipboardIsCut;
     private string _status = "Ready";
     private SearchTabViewModel? _selectedSearchTab;
@@ -37,7 +49,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private string _browserLocation = "";
     private bool _isFavoritesVisible = true;
     private bool _isPreviewVisible;
+    private bool _isNavigationPaneVisible;
     private bool _isNavigationVisible;
+    private bool _isAddressNavigationPending;
     private int _browserHistoryIndex = -1;
     private string _previewTitle = "Select a result";
     private string _previewDescription = "Choose a file or folder to see its details here.";
@@ -48,15 +62,33 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private bool _isLoadingNasNavigation;
     private string _nasNavigationStatus = "NAS navigation is waiting for a connection.";
     private readonly DispatcherTimer _nasNavigationRetryTimer;
+    private CancellationTokenSource? _addressSuggestionCancellation;
+    private readonly Dictionary<string, AddressDirectorySearchCacheEntry> _addressDirectorySearchCache = new(StringComparer.Ordinal);
+    private bool _isAddressSuggestionsOpen;
     private int _nextTabNumber = 1;
+    private readonly SemaphoreSlim _linuxMountGate = new(1, 1);
 
-    public MainWindowViewModel()
+    public MainWindowViewModel() : this(RuntimeMode.IsDemo ? DemoCatalog.CreateConfig() : ConfigStore.Load(), startBackgroundWork: true)
     {
-        _client = new QsirchClient(_config);
+    }
+
+    internal MainWindowViewModel(AppConfig config, bool startBackgroundWork)
+    {
+        _config = config;
+        if (RuntimeMode.IsDemo)
+        {
+            DemoCatalog.Initialize();
+        }
+        if (startBackgroundWork && !RuntimeMode.IsDemo)
+        {
+            AutoConfigureLinuxMountMappings();
+        }
+        _client = CreateClient();
         _mapper = new PathMapper(_config);
         _rules = new ResultRules(_config);
         _history = new HistoryStore(_config);
         _isPreviewVisible = _config.Behavior.PreviewPane;
+        _isNavigationPaneVisible = _config.Behavior.ShowNavigationPane;
         _fileTypes =
         [
             new FileTypeFilter { Name = "All types", IncludeAllFiles = true, IncludeFolders = true },
@@ -76,7 +108,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         NewSearchTabCommand = new AsyncCommand(NewSearchTabAsync);
         BrowseCommand = new AsyncCommand(BrowseAtLocationAsync, () => !string.IsNullOrWhiteSpace(BrowserLocation));
         RefreshBrowserCommand = new AsyncCommand(() => BrowseAsync(), () => !string.IsNullOrWhiteSpace(BrowserLocation));
-        NavigateUpCommand = new AsyncCommand(NavigateUpAsync, () => NasFileBrowser.GetParentFolder(BrowserLocation) != null);
+        NavigateUpCommand = new AsyncCommand(NavigateUpAsync, () => NasFileBrowser.GetParentFolder(ResolveBrowserLocation(BrowserLocation)) != null);
         OpenBrowserItemCommand = new AsyncCommand(OpenSelectedBrowserItemAsync, () => SelectedBrowserItem != null);
         ToggleBrowserFavoriteCommand = new AsyncCommand(ToggleSelectedBrowserItemFavoriteAsync, () => SelectedBrowserItem != null);
         PasteBrowserItemsCommand = new AsyncCommand(PasteBrowserItemsAsync, () => CanPasteBrowserItems && !string.IsNullOrWhiteSpace(BrowserLocation));
@@ -89,22 +121,39 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             OpenSelectedFavoriteAsync,
             () => SelectedFavoriteNode?.Result != null || SelectedFavoriteNode?.SavedSearch != null);
 
-        RestorePinnedTabs();
+        if (startBackgroundWork && !RuntimeMode.IsDemo)
+        {
+            RestorePinnedTabs();
+        }
         if (SearchTabs.Count == 0)
         {
             AddSearchTab();
         }
         SelectedSearchTab = SearchTabs[0];
         EnsureNavigationRoots();
-        _ = LoadNasNavigationRootAsync();
-        _nasNavigationRetryTimer.Start();
-        _ = RefreshFavoritesAsync();
-        _ = RefreshRecentSearchesAsync();
+        if (startBackgroundWork)
+        {
+            if (RuntimeMode.IsDemo)
+            {
+                DemoCatalog.SeedHistory(_history);
+                IsNasNavigationOnline = true;
+                NasNavigationStatus = "Demo archive ready";
+                _ = LoadDemoNavigationAsync();
+            }
+            else
+            {
+                _ = LoadNasNavigationRootAsync();
+                _nasNavigationRetryTimer.Start();
+            }
+            _ = RefreshFavoritesAsync();
+            _ = RefreshRecentSearchesAsync();
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<SearchTabViewModel> SearchTabs { get; } = [];
+    public ObservableCollection<BrowserPathSuggestion> AddressSuggestions { get; } = [];
     public ObservableCollection<BrowserItem> BrowserItems
     {
         get => _browserItems;
@@ -126,7 +175,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<NavigationTreeNode> NavigationRoots { get; } = [];
     public ObservableCollection<BrowserBreadcrumb> BrowserBreadcrumbs { get; } = [];
     public ObservableCollection<FavoriteTreeNode> FavoriteTree { get; } = [];
+    public bool HasFavorites => FavoriteTree.Count > 0;
     public ObservableCollection<string> RecentSearches { get; } = [];
+    public bool HasRecentSearches => RecentSearches.Count > 0;
     public AsyncCommand NewSearchTabCommand { get; }
     public AsyncCommand BrowseCommand { get; }
     public AsyncCommand RefreshBrowserCommand { get; }
@@ -146,22 +197,32 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public bool CanNavigateBack => _browserHistoryIndex > 0;
     public bool CanNavigateForward => _browserHistoryIndex >= 0 && _browserHistoryIndex < _browserHistory.Count - 1;
     public bool CanPasteBrowserItems => _browserClipboard.Count > 0;
-    public bool IsConnectionConfigured => !string.IsNullOrWhiteSpace(_config.Host) &&
-                                         !string.IsNullOrWhiteSpace(_config.User) &&
-                                         !string.IsNullOrWhiteSpace(_config.Password);
+    public bool IsNasConnectionConfigured => _config.QsirchEnabled &&
+                                            !string.IsNullOrWhiteSpace(_config.Host) &&
+                                            !string.IsNullOrWhiteSpace(_config.User) &&
+                                            !string.IsNullOrWhiteSpace(_config.Password);
+    public bool IsSearchServiceConfigured => _config.SearchService.IsConfigured;
+    public bool IsConnectionConfigured => IsNasConnectionConfigured || IsSearchServiceConfigured;
     public bool NeedsConnection => !IsConnectionConfigured;
     public string CurrentWindowsUser
     {
         get
         {
+            if (RuntimeMode.IsDemo)
+            {
+                return "Demo operator | Sample workspace";
+            }
+
             var user = GlobalRuleAuthorization.GetCurrentUserStatus();
             return $"{user.UserName} | {user.DisplayStatus}";
         }
     }
 
-    public string ConnectionSummary => IsConnectionConfigured
-        ? $"NAS: {_config.Host}:{_config.Port}"
-        : "NAS: not configured";
+    public string ConnectionSummary => RuntimeMode.IsDemo
+        ? "Demo archive | synthetic data"
+        : IsConnectionConfigured
+        ? _client.ProviderName
+        : "Search: not configured";
     public string NasConnectionStatus => IsConnectionConfigured
         ? $"{ConnectionSummary} | {NasNavigationStatus}"
         : ConnectionSummary;
@@ -202,6 +263,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             if (value != null)
             {
                 RestoreBrowserTab(value);
+                IsAddressNavigationPending = false;
+                SyncNavigationScopeSelection(value);
                 IsNavigationVisible = value.IsBrowsing;
                 Status = value.Status;
             }
@@ -247,13 +310,31 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public bool IsFavoritesVisible
     {
         get => _isFavoritesVisible;
-        set => SetField(ref _isFavoritesVisible, value);
+        set
+        {
+            if (SetField(ref _isFavoritesVisible, value))
+            {
+            }
+        }
     }
 
     public bool IsPreviewVisible
     {
         get => _isPreviewVisible;
         set => SetField(ref _isPreviewVisible, value);
+    }
+
+    public bool IsNavigationPaneVisible
+    {
+        get => _isNavigationPaneVisible;
+        set
+        {
+            if (SetField(ref _isNavigationPaneVisible, value))
+            {
+                _config.Behavior.ShowNavigationPane = value;
+                ConfigStore.Save(_config);
+            }
+        }
     }
 
     public bool IsNavigationVisible
@@ -268,12 +349,34 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
             OnPropertyChanged(nameof(IsSearchContentVisible));
             OnPropertyChanged(nameof(IsRecycleBinView));
+            OnPropertyChanged(nameof(IsLocalRecycleBinView));
+            OnPropertyChanged(nameof(IsNasRecycleBinView));
+            OnPropertyChanged(nameof(CanOpenVersionHistory));
+            OnPropertyChanged(nameof(IsHomeView));
+            OnPropertyChanged(nameof(IsBrowserFileListVisible));
             SelectedSearchTab?.SetWorkspaceMode(value);
         }
     }
 
     public bool IsSearchContentVisible => !IsNavigationVisible;
-    public bool IsRecycleBinView => IsNavigationVisible && IsRecycleFolderPath(BrowserLocation);
+    public bool IsRecycleBinView => IsNavigationVisible && IsRecycleBinPath(BrowserLocation);
+    public bool IsLocalRecycleBinView => IsRecycleBinView && !IsNasBackedPath(BrowserLocation);
+    public bool IsNasRecycleBinView => IsRecycleBinView && IsNasBackedPath(BrowserLocation);
+    public bool CanOpenVersionHistory => !IsNavigationVisible || IsNasBackedPath(BrowserLocation);
+    public bool IsHomeView => IsNavigationVisible && IsHomeLocation(BrowserLocation);
+    public bool IsAddressNavigationPending
+    {
+        get => _isAddressNavigationPending;
+        private set
+        {
+            if (SetField(ref _isAddressNavigationPending, value))
+            {
+                OnPropertyChanged(nameof(IsBrowserFileListVisible));
+            }
+        }
+    }
+
+    public bool IsBrowserFileListVisible => IsNavigationVisible && !IsHomeView && !IsAddressNavigationPending;
 
     public string PreviewTitle
     {
@@ -296,8 +399,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public object? NativePreviewHost
     {
         get => _nativePreviewHost;
-        private set => SetField(ref _nativePreviewHost, value);
+        private set
+        {
+            if (SetField(ref _nativePreviewHost, value))
+            {
+                OnPropertyChanged(nameof(ShowPreviewDetails));
+            }
+        }
     }
+
+    public bool ShowPreviewDetails => NativePreviewHost == null;
 
     public bool IsRecentSearchesOpen
     {
@@ -318,11 +429,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             RefreshBrowserCommand.RaiseCanExecuteChanged();
             NavigateUpCommand.RaiseCanExecuteChanged();
             OnPropertyChanged(nameof(IsRecycleBinView));
+            OnPropertyChanged(nameof(IsLocalRecycleBinView));
+            OnPropertyChanged(nameof(IsNasRecycleBinView));
+            OnPropertyChanged(nameof(CanOpenVersionHistory));
+            OnPropertyChanged(nameof(IsHomeView));
+            OnPropertyChanged(nameof(IsBrowserFileListVisible));
         }
     }
 
     public async Task NavigateToFolderAsync(NavigationTreeNode node)
     {
+        if (node.IsHome)
+        {
+            ShowHomeDriveOverview();
+            return;
+        }
+
         if (node.IsPlaceholder || string.IsNullOrWhiteSpace(node.FullPath))
         {
             return;
@@ -330,15 +452,27 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
-            var resolvedPath = _mapper.ResolveBrowserPath(node.FullPath);
+            var navigationPath = await EnsureLinuxShareMountedAsync(node.FullPath);
+            var resolvedPath = ResolveBrowserLocation(navigationPath);
+            if (!node.FullPath.Equals(navigationPath, StringComparison.OrdinalIgnoreCase))
+            {
+                node = FlattenNavigationNodes(NavigationRoots)
+                    .FirstOrDefault(candidate => candidate.FullPath.Equals(navigationPath, StringComparison.OrdinalIgnoreCase))
+                    ?? node;
+            }
             AppLogger.Info("browse", $"navigation requested folder=\"{node.FullPath}\" resolved=\"{resolvedPath}\"");
 
-            IsFavoritesVisible = true;
+            // A tree node can be opened by clicking its label without expanding its
+            // disclosure arrow. Populate it here as well, so share-root affordances
+            // such as the NAS Recycle Bin are never skipped.
+            if (!node.ChildrenLoaded)
+            {
+                await LoadNavigationChildrenAsync(node);
+            }
+
             IsNavigationVisible = true;
             BrowserLocation = resolvedPath;
             await BrowseAsync();
-            await LoadNavigationChildrenAsync(node);
-            node.IsExpanded = true;
         }
         catch (Exception ex)
         {
@@ -378,14 +512,28 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
 
         var isNasRoot = IsNasNavigationRoot(node.FullPath);
+        // Linux SMB mounts are local filesystem paths, so the node cannot be
+        // recognized from its UNC form. A configured mount mapping is still a
+        // NAS share root and must expose its friendly Recycle Bin entry.
+        var isShareRoot = node.IsShareRoot || IsMountedShareRoot(node.FullPath);
+        CancelNavigationLoad(node);
+        var cancellation = new CancellationTokenSource();
+        _navigationLoadCancellations[node] = cancellation;
+        var token = cancellation.Token;
         try
         {
-            var listing = await _browser.BrowseAsync(node.FullPath);
+            var listing = await _browser.BrowseAsync(node.FullPath, token);
+            token.ThrowIfCancellationRequested();
+            isShareRoot |= OperatingSystem.IsWindows() && node.IsDrive && listing.Items.Any(item =>
+                item.IsFolder && (IsRecycleFolder(item.Name) || IsSnapshotFolder(item.Name)));
+            AppLogger.Info("browse", $"navigation listing path=\"{node.FullPath}\" shareRoot={isShareRoot} folders={listing.Items.Count(item => item.IsFolder)} recycle={listing.Items.Any(item => IsRecycleFolder(item.Name))}");
             node.Children.Clear();
+            var readyDrives = ReadyWindowsDrives();
+            var addedChildren = 0;
             foreach (var item in listing.Items.Where(item => item.IsFolder))
             {
                 if (!_config.Behavior.ShowRecoverySystemFolders &&
-                    (IsSnapshotFolder(item.Name) || (IsRecycleFolder(item.Name) && !node.IsShareRoot)))
+                    (IsSnapshotFolder(item.Name) || (IsRecycleFolder(item.Name) && !isShareRoot)))
                 {
                     continue;
                 }
@@ -394,24 +542,52 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     continue;
                 }
 
-                var isRecoveryFolder = node.IsShareRoot && IsRecycleFolder(item.Name);
+                var isRecoveryFolder = IsRecycleFolder(item.Name);
+                var resolvedPath = NormalizeNavigationRoot(_mapper.ResolveBrowserPath(item.FullPath));
+                var drive = readyDrives.FirstOrDefault(candidate =>
+                    candidate.Path.Equals(resolvedPath, StringComparison.OrdinalIgnoreCase));
                 var child = CreateNavigationNode(
                     isRecoveryFolder ? "Recycle Bin" : NavigationTreeDisplayName(item.FullPath),
                     item.FullPath,
                     isRecoveryFolder,
-                    isNasRoot);
+                    isNasRoot,
+                    isDrive: drive != null,
+                    driveUsedFraction: drive?.UsedFraction ?? 0,
+                    driveSpaceText: drive?.SpaceText ?? "",
+                    driveType: drive?.Type);
                 node.Children.Add(child);
+                addedChildren++;
+                if (addedChildren % 100 == 0)
+                {
+                    // Let Avalonia paint and process input while an explicitly expanded
+                    // folder has a large number of immediate child directories.
+                    token.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                }
                 if (ShouldRestoreExpanded(child.FullPath))
                 {
                     child.IsExpanded = true;
                 }
             }
+
+            // A NAS can omit its protected recycle folder from a generic listing
+            // even when the folder itself is reachable. Probe known names at each
+            // mounted share root so recovery is discoverable.
+            await DiscoverRecycleBinAsync(node, token);
+            token.ThrowIfCancellationRequested();
             node.ChildrenLoaded = true;
+            if (SelectedSearchTab is { } tab)
+            {
+                SyncNavigationScopeSelection(tab);
+            }
             if (isNasRoot)
             {
                 SetNasNavigationState(true, "Online");
             }
             AppLogger.Info("browse", $"navigation folder=\"{node.FullPath}\" folders={node.Children.Count}");
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -432,12 +608,29 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             }
             AppLogger.Warn("browse", $"navigation tree unavailable folder=\"{node.FullPath}\" reason=\"{ex.Message}\"");
         }
+        finally
+        {
+            if (_navigationLoadCancellations.TryGetValue(node, out var active) && ReferenceEquals(active, cancellation))
+            {
+                _navigationLoadCancellations.Remove(node);
+                active.Dispose();
+            }
+        }
     }
 
     public void ReloadConnection()
     {
+        if (RuntimeMode.IsDemo)
+        {
+            RefreshNavigationRoots();
+            _ = LoadDemoNavigationAsync();
+            Status = "Demo archive reloaded";
+            return;
+        }
+
+        CancelNavigationLoads();
         _client.Dispose();
-        _client = new QsirchClient(_config);
+        _client = CreateClient();
         _mapper = new PathMapper(_config);
         _rules = new ResultRules(_config);
         RefreshNavigationRoots();
@@ -447,10 +640,515 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(NeedsConnection));
         OnPropertyChanged(nameof(ConnectionSummary));
         OnPropertyChanged(nameof(NasConnectionStatus));
-        Status = IsConnectionConfigured ? "Connection settings saved" : "Add NAS connection details to search";
+        Status = IsConnectionConfigured ? "Connection settings saved" : "Add NAS or QIndexer connection details to search";
     }
 
     public void StatusMessage(string message) => Status = message;
+
+    private ISearchProvider CreateClient()
+    {
+        var providers = new List<ISearchProvider>();
+        if (IsNasConnectionConfigured)
+        {
+            var qsirch = new QsirchClient(_config);
+            qsirch.SessionRecoveryStatus += message => Dispatcher.UIThread.Post(() => Status = message);
+            providers.Add(qsirch);
+        }
+        if (IsSearchServiceConfigured)
+        {
+            providers.Add(new QSurferSearchServiceClient(_config));
+        }
+        return providers.Count switch
+        {
+            1 => providers[0],
+            > 1 => new CompositeSearchProvider(providers),
+            _ => new QsirchClient(_config),
+        };
+    }
+
+    public bool IsAddressSuggestionsOpen
+    {
+        get => _isAddressSuggestionsOpen;
+        set => SetField(ref _isAddressSuggestionsOpen, value);
+    }
+
+    public async Task RefreshAddressSuggestionsAsync(string text, bool skipDebounce = false)
+    {
+        // The previous request owns disposal of its token in its finally block.
+        // Disposing it here races with a new keystroke that is trying to cancel it.
+        _addressSuggestionCancellation?.Cancel();
+
+        var input = text.Trim();
+        if (input.Length < 2)
+        {
+            SetAddressSuggestions([]);
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _addressSuggestionCancellation = cancellation;
+        try
+        {
+            if (!skipDebounce)
+            {
+                await Task.Delay(GetAddressSuggestionDebounce(input), cancellation.Token);
+            }
+            var suggestions = await FindAddressSuggestionsAsync(input, cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+            {
+                SetAddressSuggestions(suggestions);
+                AppLogger.Info("browse", $"path suggestions value=\"{input}\" count={suggestions.Count}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("browse", $"path suggestions failed value=\"{input}\" error=\"{ex.Message}\"");
+            if (!cancellation.IsCancellationRequested)
+            {
+                SetAddressSuggestions([]);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_addressSuggestionCancellation, cancellation))
+            {
+                _addressSuggestionCancellation = null;
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    public void BeginAddressNavigation()
+    {
+        IsNavigationVisible = true;
+        IsAddressNavigationPending = true;
+        SelectedBrowserItem = null;
+        BrowserBreadcrumbs.Clear();
+        Status = "Finding folder...";
+    }
+
+    public void RestoreSettledBrowserLocation()
+    {
+        _addressSuggestionCancellation?.Cancel();
+        SetAddressSuggestions([]);
+        SelectedSearchTab?.ClearScopeFolder();
+
+        IsAddressNavigationPending = false;
+        Status = SelectedSearchTab?.Status ?? (BrowserItems.Count == 0 ? "Ready" : $"Ready {BrowserItems.Count:n0} items");
+    }
+
+    public async Task ToggleNavigationSearchScopeAsync(NavigationTreeNode node)
+    {
+        if (node.IsHome || node.IsPlaceholder || string.IsNullOrWhiteSpace(node.FullPath))
+        {
+            return;
+        }
+
+        var resolvedPath = ResolveBrowserLocation(node.FullPath);
+        var scopePath = NormalizeNasScope(ResolveScopePath(resolvedPath));
+        if (string.IsNullOrWhiteSpace(scopePath))
+        {
+            Status = "Only NAS folders can scope a NAS search.";
+            return;
+        }
+
+        var tab = SelectedSearchTab ?? AddSearchTab();
+        tab.ToggleScopeFolder(scopePath);
+        SyncNavigationScopeSelection(tab);
+
+        if (string.IsNullOrWhiteSpace(tab.Query))
+        {
+            Status = tab.HasFolderScope
+                ? $"{tab.ScopePaths.Count} search folder{(tab.ScopePaths.Count == 1 ? "" : "s")} selected"
+                : "Search folder scope cleared";
+            tab.Status = Status;
+            return;
+        }
+
+        await tab.SearchCommand.ExecuteAsync();
+    }
+
+    public async Task ToggleNavigationSearchExclusionAsync(NavigationTreeNode node)
+    {
+        if (node.IsHome || node.IsPlaceholder || string.IsNullOrWhiteSpace(node.FullPath))
+        {
+            return;
+        }
+
+        var resolvedPath = ResolveBrowserLocation(node.FullPath);
+        var scopePath = NormalizeNasScope(ResolveScopePath(resolvedPath));
+        if (string.IsNullOrWhiteSpace(scopePath))
+        {
+            Status = "Only NAS folders can be excluded from a NAS search.";
+            return;
+        }
+
+        var tab = SelectedSearchTab ?? AddSearchTab();
+        tab.ToggleExcludedScopeFolder(scopePath);
+        SyncNavigationScopeSelection(tab);
+
+        if (string.IsNullOrWhiteSpace(tab.Query))
+        {
+            Status = tab.HasFolderScope
+                ? $"{tab.ExcludedScopePaths.Count} search folder{(tab.ExcludedScopePaths.Count == 1 ? "" : "s")} excluded"
+                : "Search folder scope cleared";
+            tab.Status = Status;
+            return;
+        }
+
+        await tab.SearchCommand.ExecuteAsync();
+    }
+
+    public IReadOnlyList<BrowserItem> SelectedNavigationScopeItems()
+    {
+        var scopes = (SelectedSearchTab?.ScopePaths ?? [])
+            .Select(NormalizeNasScope)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (scopes.Count == 0)
+        {
+            return [];
+        }
+
+        return FlattenNavigationNodes(NavigationRoots)
+            .Where(node => !node.IsHome && !node.IsPlaceholder && !string.IsNullOrWhiteSpace(node.FullPath))
+            .Where(node => scopes.Contains(NormalizeNasScope(ResolveScopePath(ResolveBrowserLocation(node.FullPath)))))
+            .Select(node => new BrowserItem(node.Name, node.FullPath, true, 0, DateTime.MinValue))
+            .DistinctBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public bool RequiresScopeReplacementConfirmation =>
+        _config.Behavior.ConfirmScopeReplacement &&
+        SelectedSearchTab is { IsScopeAppendPending: false, ScopePaths.Count: > 1 };
+
+    public bool RequiresScopeReplacementConfirmationForAddress(string address)
+    {
+        // Accepted addresses navigate the browser. They initialize an empty
+        // search scope or append only after the user explicitly presses +, so
+        // an address can no longer replace a folder selection to confirm.
+        return false;
+    }
+
+    public async Task SelectAddressSuggestionAsync(BrowserPathSuggestion suggestion)
+    {
+        BrowserLocation = suggestion.Path;
+        DismissAddressSuggestions();
+        await BrowseAddressAsync(setSearchScope: true);
+    }
+
+    public async Task BrowseAddressAsync(bool setSearchScope)
+    {
+        var address = (BrowserLocation ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return;
+        }
+
+        if (setSearchScope && SelectedSearchTab is { } tab &&
+            (!tab.HasFolderScope || tab.IsScopeAppendPending))
+        {
+            var scopePath = ResolveScopePath(address);
+            AppLogger.Info("browse", $"address scope address=\"{address}\" resolved=\"{scopePath ?? ""}\"");
+            if (!string.IsNullOrWhiteSpace(scopePath))
+            {
+                tab.ApplyAddressScope(scopePath);
+            }
+        }
+
+        DismissAddressSuggestions();
+        IsNavigationVisible = true;
+        await BrowseAsync();
+    }
+
+    public void BeginFolderScopeAppend()
+    {
+        SelectedSearchTab?.BeginScopeAppend();
+    }
+
+    private string ResolveBrowserLocation(string path) => RuntimeMode.IsDemo
+        ? DemoCatalog.ResolveActualPath(path) ?? path
+        : _mapper.ResolveBrowserPath(path);
+
+    private string DisplayBrowserLocation(string path) => RuntimeMode.IsDemo
+        ? DemoCatalog.ToDisplayPath(path)
+        : _mapper.DisplayBrowserPath(path);
+
+    private string? ResolveScopePath(string path)
+    {
+        if (RuntimeMode.IsDemo)
+        {
+            return DemoCatalog.ResolveScope(path);
+        }
+
+        // Keep explicit mapped-drive and UNC paths in the tab. Qsirch results gain
+        // their mapped path before client-side scope filtering, and QIndexer can
+        // translate the same form through its advertised root aliases. Collapsing
+        // X:\ to Qsirch's internal \Share form here makes the two providers use
+        // incompatible namespaces.
+        var localPath = ResolveBrowserLocation(path);
+        return Path.IsPathFullyQualified(localPath) || IsUncPath(localPath)
+            ? localPath
+            : _mapper.TryResolveNasSearchPath(path);
+    }
+
+    private void SetAddressSuggestions(IEnumerable<BrowserPathSuggestion> suggestions)
+    {
+        AddressSuggestions.Clear();
+        foreach (var suggestion in suggestions)
+        {
+            AddressSuggestions.Add(suggestion);
+        }
+        IsAddressSuggestionsOpen = AddressSuggestions.Count > 0;
+    }
+
+    private async Task<IReadOnlyList<BrowserPathSuggestion>> FindAddressSuggestionsAsync(string input, CancellationToken cancellationToken)
+    {
+        var directSuggestions = await Task.Run(() => FindAddressSuggestions(input, cancellationToken), cancellationToken);
+        if (directSuggestions.Count > 0 || IsRootedAddressInput(input) || !IsConnectionConfigured)
+        {
+            return directSuggestions;
+        }
+
+        return await FindIndexedAddressSuggestionsAsync(input, cancellationToken);
+    }
+
+    internal IReadOnlyList<BrowserPathSuggestion> FindAddressSuggestions(string input, CancellationToken cancellationToken)
+    {
+        var linuxShareAliases = FindLinuxShareAliasSuggestions(input);
+        if (linuxShareAliases.Count > 0)
+        {
+            return linuxShareAliases;
+        }
+
+        var resolved = ResolveBrowserLocation(input);
+        if (RuntimeMode.IsDemo &&
+            !resolved.StartsWith(RuntimeMode.DemoRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return DemoCatalog.ArchiveDisplayName.StartsWith(input.Trim(), StringComparison.OrdinalIgnoreCase)
+                ? [new BrowserPathSuggestion(DemoCatalog.ArchiveDisplayName, RuntimeMode.DemoArchiveRoot)]
+                : [];
+        }
+        if (OperatingSystem.IsWindows() && resolved.Length == 2 && char.IsAsciiLetter(resolved[0]) && resolved[1] == ':')
+        {
+            resolved += Path.DirectorySeparatorChar;
+        }
+
+        var root = Path.GetPathRoot(resolved);
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        {
+            return [];
+        }
+
+        var trailingSeparator = resolved.EndsWith(Path.DirectorySeparatorChar) || resolved.EndsWith(Path.AltDirectorySeparatorChar);
+        var relative = resolved[root.Length..].Trim(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var segments = relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var completedSegments = trailingSeparator ? segments : segments.Take(Math.Max(segments.Length - 1, 0)).ToArray();
+        var finalPrefix = trailingSeparator || segments.Length == 0 ? "" : segments[^1];
+        var parents = new List<string> { root };
+
+        foreach (var segment in completedSegments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            parents = FindChildDirectories(
+                parents,
+                segment,
+                requireExactMatch: true,
+                cancellationToken,
+                includeHidden: segment.StartsWith(".", StringComparison.Ordinal));
+            if (parents.Count == 0)
+            {
+                return [];
+            }
+        }
+
+        var candidates = FindChildDirectories(parents, finalPrefix, requireExactMatch: false, cancellationToken);
+        return CreateAddressSuggestions(candidates, finalPrefix);
+    }
+
+    private IReadOnlyList<BrowserPathSuggestion> FindLinuxShareAliasSuggestions(string input)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return [];
+        }
+
+        var normalized = (input ?? "").Trim().Replace('\\', '/');
+        if (!normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            return [];
+        }
+
+        var relative = normalized.TrimStart('/');
+        var segments = relative.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var hasTrailingSeparator = normalized.EndsWith("/", StringComparison.Ordinal);
+        if (segments.Length > 1 || (segments.Length == 1 && hasTrailingSeparator))
+        {
+            return [];
+        }
+
+        var typedPrefix = segments.Length == 0 ? "" : segments[0];
+        var aliases = _config.PathMappings
+            .Select(mapping => mapping.ShareRoot.Trim('\\', '/').Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).LastOrDefault())
+            .Where(share => !string.IsNullOrWhiteSpace(share) && share.StartsWith(typedPrefix, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(share => share, StringComparer.OrdinalIgnoreCase)
+            .Take(AddressSuggestionLimit)
+            .Select(share => new BrowserPathSuggestion(share!, "/" + share))
+            .ToList();
+
+        return aliases;
+    }
+
+    private async Task<IReadOnlyList<BrowserPathSuggestion>> FindIndexedAddressSuggestionsAsync(string input, CancellationToken cancellationToken)
+    {
+        var segments = input.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 0 || string.IsNullOrWhiteSpace(segments[0]))
+        {
+            return [];
+        }
+
+        var firstSegment = segments[0];
+        var folders = await FindIndexedFoldersAsync(firstSegment, cancellationToken);
+        var candidatePaths = folders
+            .Where(folder => segments.Length == 1 || folder.FileName.Equals(firstSegment, StringComparison.OrdinalIgnoreCase))
+            .Select(ResolveWindowsPath)
+            .Where(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(AddressPathBranchLimit)
+            .ToList();
+
+        if (segments.Length == 1)
+        {
+            return CreateAddressSuggestions(candidatePaths, firstSegment);
+        }
+
+        var completedSegments = segments.Skip(1).Take(segments.Length - 2);
+        foreach (var segment in completedSegments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            candidatePaths = FindChildDirectories(candidatePaths, segment, requireExactMatch: true, cancellationToken);
+            if (candidatePaths.Count == 0)
+            {
+                return [];
+            }
+        }
+
+        var finalPrefix = segments[^1];
+        return CreateAddressSuggestions(
+            FindChildDirectories(candidatePaths, finalPrefix, requireExactMatch: false, cancellationToken),
+            finalPrefix);
+    }
+
+    private async Task<IReadOnlyList<SearchResult>> FindIndexedFoldersAsync(string firstSegment, CancellationToken cancellationToken)
+    {
+        if (_addressDirectorySearchCache.TryGetValue(firstSegment, out var cached) &&
+            DateTime.UtcNow - cached.CreatedUtc < AddressDirectorySearchCacheLifetime)
+        {
+            return cached.Folders;
+        }
+
+        var folders = await _client.SearchDirectoriesAsync(firstSegment, 50, cancellationToken);
+        var uppercaseSegment = firstSegment.ToUpperInvariant();
+        if (folders.Count == 0 && !string.Equals(firstSegment, uppercaseSegment, StringComparison.Ordinal))
+        {
+            folders = await _client.SearchDirectoriesAsync(uppercaseSegment, 50, cancellationToken);
+        }
+
+        _addressDirectorySearchCache[firstSegment] = new AddressDirectorySearchCacheEntry(DateTime.UtcNow, folders);
+        return folders;
+    }
+
+    private IReadOnlyList<BrowserPathSuggestion> CreateAddressSuggestions(IEnumerable<string> paths, string typedPrefix) =>
+        paths
+            .Select(path => new BrowserPathSuggestion(
+                Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                DisplayBrowserLocation(path)))
+            // Prefer an exact-case candidate when both AA and aa exist, but treat case as
+            // irrelevant for every normal folder match.
+            .OrderBy(suggestion => suggestion.Name.StartsWith(typedPrefix, StringComparison.Ordinal) ? 0 : 1)
+            .ThenBy(suggestion => suggestion.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(suggestion => suggestion.Path, StringComparer.OrdinalIgnoreCase)
+            .Take(AddressSuggestionLimit)
+            .ToList();
+
+    private static int GetAddressSuggestionDebounce(string input) =>
+        IsRootedAddressInput(input) || input.IndexOfAny(['\\', '/']) >= 0
+            ? NestedAddressSuggestionDebounceMilliseconds
+            : InitialAddressSuggestionDebounceMilliseconds;
+
+    private static List<string> FindChildDirectories(
+        IEnumerable<string> parents,
+        string prefix,
+        bool requireExactMatch,
+        CancellationToken cancellationToken,
+        bool includeHidden = false)
+    {
+        var options = new EnumerationOptions
+        {
+            AttributesToSkip = includeHidden ? 0 : FileAttributes.Hidden | FileAttributes.System,
+            IgnoreInaccessible = true,
+            RecurseSubdirectories = false,
+            ReturnSpecialDirectories = false,
+        };
+        var matches = new List<string>();
+        foreach (var parent in parents.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!Directory.Exists(parent))
+            {
+                continue;
+            }
+
+            foreach (var path in Directory.EnumerateDirectories(parent, "*", options))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                var isMatch = requireExactMatch
+                    ? name.Equals(prefix, StringComparison.OrdinalIgnoreCase)
+                    : name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+                if (!isMatch)
+                {
+                    continue;
+                }
+
+                matches.Add(path);
+                if (matches.Count >= AddressSuggestionLimit * AddressPathBranchLimit)
+                {
+                    return matches;
+                }
+            }
+        }
+
+        return matches;
+    }
+
+    private static bool IsRootedAddressInput(string input)
+    {
+        var trimmed = input.Trim();
+        return Path.IsPathRooted(trimmed) ||
+               trimmed.StartsWith(@"\\", StringComparison.Ordinal) ||
+               (OperatingSystem.IsWindows() && trimmed.Length >= 2 && char.IsAsciiLetter(trimmed[0]) && trimmed[1] == ':');
+    }
+
+    public void AcceptAddressSuggestion(BrowserPathSuggestion suggestion)
+    {
+        BrowserLocation = suggestion.Path;
+        // A pending directory probe can otherwise finish after acceptance and reopen
+        // the popup over the newly scoped folder. Cancel the probe instead of merely
+        // hiding the popup; retaining the source list preserves keyboard selection
+        // state until the next address edit replaces it.
+        _addressSuggestionCancellation?.Cancel();
+        IsAddressSuggestionsOpen = false;
+    }
+
+    public void DismissAddressSuggestions()
+    {
+        _addressSuggestionCancellation?.Cancel();
+        SetAddressSuggestions([]);
+    }
 
     public void ReturnToSearchResults() => IsNavigationVisible = false;
 
@@ -462,6 +1160,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             ReturnToSearchResults();
             return;
+        }
+
+        var scopedPath = SelectedSearchTab is { HasFolderScope: true } tab
+            ? ResolveWindowsPath(new SearchResult { Path = tab.ScopePath, IsFolder = true })
+            : "";
+        if (!string.IsNullOrWhiteSpace(scopedPath))
+        {
+            BrowserLocation = scopedPath;
         }
 
         if (string.IsNullOrWhiteSpace(BrowserLocation))
@@ -482,6 +1188,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     public string ResolveWindowsPath(SearchResult result)
     {
+        if (RuntimeMode.IsDemo && !string.IsNullOrWhiteSpace(result.WindowsPath))
+        {
+            return result.WindowsPath;
+        }
+
         var path = _mapper.TryResolve(result) ?? result.WindowsPath;
         return string.IsNullOrWhiteSpace(path) ? "" : _mapper.ResolveBrowserPath(path);
     }
@@ -534,25 +1245,88 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
+        RemoveSearchTab(tab);
+    }
+
+    private void RemoveSearchTab(SearchTabViewModel tab)
+    {
         var index = SearchTabs.IndexOf(tab);
         if (index < 0)
         {
             return;
         }
+
+        tab.PropertyChanged -= SearchTabPropertyChanged;
         tab.Dispose();
         SearchTabs.RemoveAt(index);
+        _browserTabs.Remove(tab);
         if (SearchTabs.Count == 0)
         {
             AddSearchTab();
         }
         SelectedSearchTab = SearchTabs[Math.Min(index, SearchTabs.Count - 1)];
-        _browserTabs.Remove(tab);
         PersistPinnedTabs();
     }
 
     public void ToggleTabPin(SearchTabViewModel tab)
     {
         tab.IsPinned = !tab.IsPinned;
+    }
+
+    /// <summary>
+    /// Creates an independent workspace window containing a copy of a tab's
+    /// current state. Search commands must be rebound to the new view model,
+    /// so a live tab object cannot safely be shared between windows.
+    /// </summary>
+    public MainWindowViewModel DetachSearchTab(SearchTabViewModel tab)
+    {
+        var index = SearchTabs.IndexOf(tab);
+        if (index < 0)
+        {
+            throw new InvalidOperationException("The selected tab is no longer available.");
+        }
+
+        if (ReferenceEquals(tab, SelectedSearchTab))
+        {
+            _browserTabs[tab] = CaptureBrowserTab();
+        }
+
+        var snapshot = CaptureSearchTab(tab);
+        var browserState = _browserTabs.TryGetValue(tab, out var state)
+            ? state
+            : new BrowserTabState("", [], [], [], -1, null);
+
+        // A background request belongs to its original command pipeline. The
+        // moved window retains whatever it has already painted and can resume
+        // the search normally if the user asks it to.
+        tab.CancelSearch();
+
+        var detached = new MainWindowViewModel();
+        detached.ReplaceInitialTab(snapshot, browserState);
+        RemoveSearchTab(tab);
+        return detached;
+    }
+
+    public bool MoveSearchTabTo(SearchTabViewModel tab, MainWindowViewModel destination)
+    {
+        if (ReferenceEquals(this, destination) || SearchTabs.IndexOf(tab) < 0)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(tab, SelectedSearchTab))
+        {
+            _browserTabs[tab] = CaptureBrowserTab();
+        }
+
+        var snapshot = CaptureSearchTab(tab);
+        var browserState = _browserTabs.TryGetValue(tab, out var state)
+            ? state
+            : new BrowserTabState("", [], [], [], -1, null);
+        tab.CancelSearch();
+        destination.ImportTransferredTab(snapshot, browserState);
+        RemoveSearchTab(tab);
+        return true;
     }
 
     private Task NewSearchTabAsync()
@@ -584,6 +1358,79 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         return tab;
     }
 
+    private void ReplaceInitialTab(SearchTabSnapshot snapshot, BrowserTabState browserState)
+    {
+        foreach (var existing in SearchTabs.ToList())
+        {
+            existing.PropertyChanged -= SearchTabPropertyChanged;
+            existing.Dispose();
+        }
+        SearchTabs.Clear();
+        _browserTabs.Clear();
+
+        var tab = AddSearchTab();
+        ApplySearchTabSnapshot(tab, snapshot);
+        _browserTabs[tab] = browserState;
+        SelectedSearchTab = tab;
+    }
+
+    private void ImportTransferredTab(SearchTabSnapshot snapshot, BrowserTabState browserState)
+    {
+        var tab = AddSearchTab();
+        ApplySearchTabSnapshot(tab, snapshot);
+        _browserTabs[tab] = browserState;
+        SelectedSearchTab = tab;
+    }
+
+    private static SearchTabSnapshot CaptureSearchTab(SearchTabViewModel tab) => new(
+        tab.Query,
+        tab.ExactMatch,
+        tab.SearchContents,
+        tab.IsPinned,
+        tab.TypeFilterOptions.Where(option => option.IsSelected).Select(option => option.Name).ToList(),
+        tab.SelectedViewMode.Key,
+        tab.SortSpecification,
+        tab.SelectedScope.Key,
+        tab.ScopePath,
+        tab.ScopePaths.ToList(),
+        tab.ExcludedScopePaths.ToList(),
+        tab.DateFrom,
+        tab.DateTo,
+        tab.Results.ToList(),
+        tab.SelectedResult,
+        tab.NextOffset,
+        tab.CanLoadMore,
+        tab.Status,
+        tab.IsBrowsing,
+        tab.SavedSearchId,
+        tab.SavedSearchName);
+
+    private static void ApplySearchTabSnapshot(SearchTabViewModel tab, SearchTabSnapshot snapshot)
+    {
+        tab.Query = snapshot.Query;
+        tab.ExactMatch = snapshot.ExactMatch;
+        tab.SearchContents = snapshot.SearchContents;
+        tab.ApplyTypeSelection(snapshot.SelectedTypeNames);
+        tab.SelectedViewMode = tab.ViewModes.First(mode => mode.Key.Equals(snapshot.ViewKey, StringComparison.OrdinalIgnoreCase));
+        tab.ApplySortSpecification(snapshot.SortSpecification);
+        tab.RestoreScope(snapshot.ScopeKey, snapshot.ScopePath, snapshot.ScopePaths, snapshot.ExcludedScopePaths);
+        tab.DateFrom = snapshot.DateFrom;
+        tab.DateTo = snapshot.DateTo;
+        tab.AddResults(snapshot.Results);
+        tab.SelectedResult = snapshot.SelectedResult is { } selected
+            ? tab.Results.FirstOrDefault(result => SameResult(result, selected))
+            : null;
+        tab.NextOffset = snapshot.NextOffset;
+        tab.SetCanLoadMore(snapshot.CanLoadMore);
+        tab.Status = snapshot.Status;
+        tab.IsPinned = snapshot.IsPinned;
+        tab.SetWorkspaceMode(snapshot.IsBrowsing);
+        if (snapshot.SavedSearchId is long savedSearchId)
+        {
+            tab.SetSavedSearchSource(savedSearchId, snapshot.SavedSearchName);
+        }
+    }
+
     private void RestorePinnedTabs()
     {
         foreach (var saved in _config.PinnedTabs.Where(tab => !string.IsNullOrWhiteSpace(tab.Query)))
@@ -598,15 +1445,47 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             tab.DateTo = saved.DateTo ?? DateTime.Today;
             tab.ExactMatch = saved.ExactMatch;
             tab.SearchContents = saved.SearchContents;
+            tab.RestoreScope("folder", null, saved.ScopePaths, saved.ExcludedScopePaths);
             tab.IsPinned = true;
+            _pinnedTabsAwaitingReload.Add(tab);
+        }
+    }
+
+    public async Task ReloadPinnedSearchesAsync()
+    {
+        if (_pinnedTabsAwaitingReload.Count == 0)
+        {
+            return;
+        }
+
+        var tabs = _pinnedTabsAwaitingReload.ToList();
+        _pinnedTabsAwaitingReload.Clear();
+        await Task.Delay(TimeSpan.FromMilliseconds(1500));
+        foreach (var tab in tabs)
+        {
+            if (SearchTabs.Contains(tab) && tab.SearchCommand.CanExecute(null))
+            {
+                _ = tab.SearchCommand.ExecuteAsync();
+                await Task.Delay(TimeSpan.FromMilliseconds(125));
+            }
         }
     }
 
     private async Task SearchTabAsync(SearchTabViewModel tab)
     {
-        var query = tab.Query.Trim();
+        var (query, scopeInput) = ParseSearchInput(tab.Query);
         if (string.IsNullOrWhiteSpace(query))
         {
+            if (!string.IsNullOrWhiteSpace(scopeInput))
+            {
+                SetTabStatus(tab, "Add a file or folder name before the in: folder scope.");
+            }
+            return;
+        }
+
+        if (RuntimeMode.IsDemo)
+        {
+            await SearchDemoTabAsync(tab, query, scopeInput);
             return;
         }
 
@@ -623,13 +1502,26 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         SetTabStatus(tab, "Searching...");
         try
         {
-            await _client.EnsureAuthenticatedAsync(token);
+            if (!string.IsNullOrWhiteSpace(scopeInput))
+            {
+                var scopePath = await ResolveSearchScopeAsync(scopeInput, token);
+                if (string.IsNullOrWhiteSpace(scopePath))
+                {
+                    SetTabStatus(tab, $"Could not resolve search folder: {scopeInput}");
+                    return;
+                }
+
+                tab.SetScopeFolder(scopePath);
+                AppLogger.Info("search", $"scope resolved tab=\"{tab.Title}\" input=\"{scopeInput}\" path=\"{scopePath}\"");
+            }
+            var providerScope = CreateSearchProviderScope(tab);
+            await _client.EnsureAvailableAsync(token, providerScope);
             var starredKeys = await Task.Run(_history.StarredKeys, token);
             var typeFilter = _fileTypes[0];
-            var resultLimit = Math.Clamp(_config.Behavior.MaxSearchResults, 50, 5000);
+            var resultLimit = Math.Max(_config.Behavior.MaxSearchResults, 50);
             var firstPageSize = Math.Clamp(_config.Behavior.FirstPageSize, 5, 500);
             var nextPageSize = Math.Clamp(_config.Behavior.NextPageSize, 10, 500);
-            var serverQuery = BuildServerQuery(query, tab.SearchContents);
+            var serverQuery = BuildServerQuery(query, tab.SearchContents, tab.ExactMatch);
             if (tab.HasDateRange)
             {
                 var from = tab.DateFrom?.ToString("yyyy-MM-dd") ?? "1900-01-01";
@@ -654,19 +1546,26 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     token,
                     version,
                     starredKeys)).GetTask(),
-                token);
+                token,
+                CreateSearchProviderScope(tab));
 
             var folders = typeFilter.IncludeFolders
-                ? _client.SearchDirectoriesAsync(query, 100, token)
+                ? _client.SearchDirectoriesAsync(query, 100, token, providerScope)
                 : Task.FromResult<IReadOnlyList<SearchResult>>([]);
 
             _ = PaintDirectoryResultsAsync(tab, folders, token, version, starredKeys);
             await recentFiles;
 
+            // The fast recent pass is the first result page whenever the requested
+            // ordering is also newest-first. Reusing it avoids asking both providers
+            // for the identical offset-zero window a second time.
+            var recentPageIsFirstPage = tab.HasDateRange ||
+                                        (string.Equals(serverSortBy, "modified", StringComparison.OrdinalIgnoreCase) &&
+                                         string.Equals(serverSortDirection, "desc", StringComparison.OrdinalIgnoreCase));
             IReadOnlyList<SearchResult> firstPage;
-            if (tab.HasDateRange)
+            if (recentPageIsFirstPage)
             {
-                firstPage = recentFiles.Result;
+                firstPage = await recentFiles;
             }
             else
             {
@@ -679,15 +1578,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     serverSortBy,
                     serverSortDirection,
                     batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
-                    token);
+                    token,
+                    CreateSearchProviderScope(tab));
             }
 
             var offset = firstPage.Count;
             var pagingComplete = firstPage.Count == 0;
 
-            // Paint the first small page immediately, then keep paging in the background.
-            // The visible limit prevents a broad search from running indefinitely.
-            while (!pagingComplete && tab.Results.Count < resultLimit)
+            // Paint the first small page immediately, then keep paging until the
+            // configured initial-result limit. Load more deliberately has no cap.
+            // Folder scopes are client-side because the NAS protocol cannot express
+            // their include/exclude precedence. Bound the initial source scan so a
+            // narrow selection cannot walk the entire NAS before first paint.
+            while (!pagingComplete &&
+                   tab.Results.Count < resultLimit &&
+                   offset < resultLimit)
             {
                 token.ThrowIfCancellationRequested();
                 if (tab.SearchVersion != version)
@@ -704,7 +1609,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     serverSortBy,
                     serverSortDirection,
                     batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
-                    token);
+                    token,
+                    CreateSearchProviderScope(tab));
                 offset += page.Count;
                 pagingComplete = page.Count == 0;
                 AppLogger.Info("search", $"QSurfer tab=\"{tab.Title}\" page offset={offset - page.Count} count={page.Count} visible={tab.Results.Count} limit={resultLimit}");
@@ -739,10 +1645,111 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         return Task.CompletedTask;
     }
 
+    private async Task SearchDemoTabAsync(SearchTabViewModel tab, string query, string? scopeInput)
+    {
+        tab.CancelSearch();
+        tab.SearchCancellation?.Dispose();
+        tab.SearchCancellation = new CancellationTokenSource();
+        var token = tab.SearchCancellation.Token;
+        var version = ++tab.SearchVersion;
+
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(scopeInput))
+            {
+                var scope = DemoCatalog.ResolveScope(scopeInput);
+                if (string.IsNullOrWhiteSpace(scope))
+                {
+                    SetTabStatus(tab, $"Could not find demo folder: {scopeInput}");
+                    return;
+                }
+
+                tab.SetScopeFolder(scope);
+            }
+
+            await RecordRecentSearchAsync(query);
+            tab.ResetResults();
+            tab.IsSearching = true;
+            SetTabStatus(tab, "Searching demo archive...");
+            await Task.Delay(120, token);
+            var results = DemoCatalog.FilterToScopes(
+                DemoCatalog.Search(query, tab.SearchContents),
+                tab.ScopePaths,
+                tab.ExcludedScopePaths);
+            var starredKeys = await Task.Run(_history.StarredKeys, token);
+            var pageSize = Math.Clamp(_config.Behavior.FirstPageSize, 10, 80);
+            AddVisibleResults(tab, results.Take(pageSize), token, version, starredKeys);
+            tab.NextOffset = Math.Min(pageSize, results.Count);
+            tab.SetCanLoadMore(tab.NextOffset < results.Count);
+            SetTabStatus(tab, $"Ready {tab.Results.Count:n0} demo results");
+            AppLogger.Info("demo", $"search query=\"{query}\" returned={results.Count} visible={tab.Results.Count}");
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            SetTabStatus(tab, "Search stopped");
+        }
+        finally
+        {
+            if (tab.SearchVersion == version)
+            {
+                tab.IsSearching = false;
+            }
+        }
+    }
+
+    private async Task LoadMoreDemoSearchTabAsync(SearchTabViewModel tab)
+    {
+        var (query, _) = ParseSearchInput(tab.Query);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return;
+        }
+
+        tab.CancelSearch();
+        tab.SearchCancellation?.Dispose();
+        tab.SearchCancellation = new CancellationTokenSource();
+        var token = tab.SearchCancellation.Token;
+        var version = ++tab.SearchVersion;
+        try
+        {
+            tab.IsSearching = true;
+            SetTabStatus(tab, "Loading more demo results...");
+            await Task.Delay(90, token);
+            var results = DemoCatalog.FilterToScopes(
+                DemoCatalog.Search(query, tab.SearchContents),
+                tab.ScopePaths,
+                tab.ExcludedScopePaths);
+            var starredKeys = await Task.Run(_history.StarredKeys, token);
+            var offset = tab.NextOffset;
+            var pageSize = Math.Clamp(_config.Behavior.NextPageSize, 10, 120);
+            AddVisibleResults(tab, results.Skip(offset).Take(pageSize), token, version, starredKeys);
+            tab.NextOffset = Math.Min(offset + pageSize, results.Count);
+            tab.SetCanLoadMore(tab.NextOffset < results.Count);
+            SetTabStatus(tab, $"Ready {tab.Results.Count:n0} demo results");
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            SetTabStatus(tab, "Load more stopped");
+        }
+        finally
+        {
+            if (tab.SearchVersion == version)
+            {
+                tab.IsSearching = false;
+            }
+        }
+    }
+
     private async Task LoadMoreSearchTabAsync(SearchTabViewModel tab)
     {
         if (string.IsNullOrWhiteSpace(tab.Query) || !tab.CanLoadMore)
         {
+            return;
+        }
+
+        if (RuntimeMode.IsDemo)
+        {
+            await LoadMoreDemoSearchTabAsync(tab);
             return;
         }
 
@@ -755,20 +1762,54 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         SetTabStatus(tab, "Loading more results...");
         try
         {
-            var query = tab.Query.Trim();
-            var serverQuery = BuildServerQuery(query, tab.SearchContents);
+            var (query, _) = ParseSearchInput(tab.Query);
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return;
+            }
+            var serverQuery = BuildServerQuery(query, tab.SearchContents, tab.ExactMatch);
+            if (tab.HasDateRange)
+            {
+                var from = tab.DateFrom?.ToString("yyyy-MM-dd") ?? "1900-01-01";
+                var to = tab.DateTo?.ToString("yyyy-MM-dd") ?? DateTime.Today.ToString("yyyy-MM-dd");
+                serverQuery += $" modified:{from}..{to}";
+            }
+
             var starredKeys = await Task.Run(_history.StarredKeys, token);
             var pageSize = Math.Clamp(_config.Behavior.NextPageSize, 10, 500);
-            var page = await _client.SearchAsync(
-                serverQuery,
-                _fileTypes[0],
-                pageSize,
-                tab.NextOffset,
-                batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
-                token);
-            tab.NextOffset += page.Count;
-            tab.SetCanLoadMore(page.Count >= pageSize);
-            SetTabStatus(tab, page.Count == 0 ? $"Ready {tab.Results.Count:n0} results" : $"Ready {tab.Results.Count:n0} results");
+            var (serverSortBy, serverSortDirection) = ServerSortFor(tab);
+            var offset = tab.NextOffset;
+            var pagingComplete = false;
+
+            // Load more is an explicit request to exhaust the current query. The
+            // terminal empty page is the only reliable completion signal Qsirch gives us.
+            while (!pagingComplete)
+            {
+                token.ThrowIfCancellationRequested();
+                if (tab.SearchVersion != version)
+                {
+                    return;
+                }
+
+                SetTabStatus(tab, $"Loading {tab.Results.Count:n0} results...");
+                var page = await _client.SearchAsync(
+                    serverQuery,
+                    _fileTypes[0],
+                    pageSize,
+                    offset,
+                    serverSortBy,
+                    serverSortDirection,
+                    batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
+                    token,
+                    CreateSearchProviderScope(tab));
+                offset += page.Count;
+                pagingComplete = page.Count == 0;
+                AppLogger.Info("search", $"QSurfer tab=\"{tab.Title}\" load-more offset={offset - page.Count} count={page.Count} visible={tab.Results.Count}");
+            }
+
+            tab.NextOffset = offset;
+            tab.SetCanLoadMore(false);
+            SetTabStatus(tab, $"Ready {tab.Results.Count:n0} results");
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -800,6 +1841,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         tab.SearchVersion++;
         tab.ResetResults();
         tab.Query = "";
+        tab.ClearScopeFolder();
         tab.IsSearching = false;
         SetTabStatus(tab, "Ready");
         return Task.CompletedTask;
@@ -841,6 +1883,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 FavoriteTree.Add(node);
             }
             SelectedFavoriteNode = FindFavoriteNode(refreshedTree, selectedNodeKey);
+            OnPropertyChanged(nameof(HasFavorites));
         }
         catch (Exception ex)
         {
@@ -859,6 +1902,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             {
                 RecentSearches.Add(search);
             }
+            OnPropertyChanged(nameof(HasRecentSearches));
         });
     }
 
@@ -872,9 +1916,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     {
         if (SelectedFavoriteNode?.SavedSearch is { } savedSearch)
         {
-            var tab = SelectedSearchTab ?? AddSearchTab();
+            var tab = AddSearchTab();
             SelectedSearchTab = tab;
+            tab.SetSavedSearchSource(savedSearch.Id, savedSearch.Name);
             tab.Query = savedSearch.Query;
+            tab.ApplyTypeSelection(savedSearch.TypeNames);
+            tab.SelectedViewMode = tab.ViewModes.FirstOrDefault(view => view.Key.Equals(savedSearch.ViewKey, StringComparison.OrdinalIgnoreCase)) ?? tab.SelectedViewMode;
+            tab.ApplySortSpecification(savedSearch.SortValue);
+            tab.DateFrom = savedSearch.DateFrom;
+            tab.DateTo = savedSearch.DateTo;
+            tab.ExactMatch = savedSearch.ExactMatch;
+            tab.SearchContents = savedSearch.SearchContents;
+            tab.RestoreScope("folder", null, savedSearch.ScopePaths, savedSearch.ExcludedScopePaths);
             if (tab.SearchCommand.CanExecute(null))
             {
                 await tab.SearchCommand.ExecuteAsync();
@@ -999,6 +2052,20 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         var result = tab.SelectedResult;
         if (result == null)
         {
+            return;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var mountedPath = _mapper.TryResolve(result);
+            if (string.IsNullOrWhiteSpace(mountedPath) || IsUncPath(mountedPath))
+            {
+                SetTabStatus(tab, "This result is not mapped to a local CIFS mount yet.");
+                return;
+            }
+
+            await OpenPathAsync(mountedPath);
+            SetTabStatus(tab, "Showing location");
             return;
         }
 
@@ -1195,23 +2262,104 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         Status = groups.Count == 0 ? "Favorite updated" : "Favorite groups updated";
     }
 
-    public async Task SaveSearchAsync(SearchTabViewModel tab, string name)
+    public async Task<bool> SaveSearchAsync(SearchTabViewModel tab, string name)
     {
         var query = tab.Query.Trim();
         var displayName = name.Trim();
         if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(displayName))
         {
+            return false;
+        }
+
+        if (await FindSavedSearchByNameAsync(displayName) is not null)
+        {
+            SetTabStatus(tab, $"A saved search named '{displayName}' already exists.");
+            return false;
+        }
+
+        var savedSearch = new SavedSearch(
+            0,
+            displayName,
+            query,
+            tab.ScopePaths.ToList(),
+            tab.ExcludedScopePaths.ToList(),
+            tab.TypeFilterOptions.Where(option => option.IsSelected).Select(option => option.Name).ToList(),
+            tab.SelectedViewMode.Key,
+            tab.SortSpecification,
+            tab.DateFrom,
+            tab.DateTo,
+            tab.ExactMatch,
+            tab.SearchContents);
+        var savedSearchId = await Task.Run(() => _history.SaveSearch(savedSearch));
+        if (savedSearchId is not long persistedId)
+        {
+            SetTabStatus(tab, "Could not save search.");
+            return false;
+        }
+        await RefreshFavoritesAsync();
+        var persistedSavedSearch = (await Task.Run(_history.SavedSearches))
+            .FirstOrDefault(search => search.Id == persistedId);
+        if (persistedSavedSearch is not null)
+        {
+            tab.SetSavedSearchSource(persistedSavedSearch.Id, persistedSavedSearch.Name);
+        }
+        SetTabStatus(tab, $"Saved search: {displayName}");
+        return true;
+    }
+
+    public Task<SavedSearch?> FindSavedSearchByNameAsync(string name)
+    {
+        var displayName = name.Trim();
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            return Task.FromResult<SavedSearch?>(null);
+        }
+
+        return Task.Run(() => _history.SavedSearches()
+            .FirstOrDefault(search => search.Name.Equals(displayName, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    public Task OverwriteSavedSearchAsync(SearchTabViewModel tab) =>
+        tab.SavedSearchId is long savedSearchId
+            ? OverwriteSavedSearchAsync(tab, new SavedSearch(
+                savedSearchId,
+                tab.SavedSearchName,
+                tab.Query,
+                [], [], [], "details", "recent:desc", null, null, false, false))
+            : Task.CompletedTask;
+
+    public async Task OverwriteSavedSearchAsync(SearchTabViewModel tab, SavedSearch target)
+    {
+        var query = tab.Query.Trim();
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            SetTabStatus(tab, "Add a search term before saving changes.");
             return;
         }
 
-        var saved = await Task.Run(() => _history.SaveSearch(displayName, query));
+        var savedSearch = new SavedSearch(
+            target.Id,
+            target.Name,
+            query,
+            tab.ScopePaths.ToList(),
+            tab.ExcludedScopePaths.ToList(),
+            tab.TypeFilterOptions.Where(option => option.IsSelected).Select(option => option.Name).ToList(),
+            tab.SelectedViewMode.Key,
+            tab.SortSpecification,
+            tab.DateFrom,
+            tab.DateTo,
+            tab.ExactMatch,
+            tab.SearchContents);
+        var saved = await Task.Run(() => _history.UpdateSavedSearch(target.Id, savedSearch));
         if (!saved)
         {
-            SetTabStatus(tab, "Could not save search.");
+            SetTabStatus(tab, "Could not overwrite saved search.");
             return;
         }
+
         await RefreshFavoritesAsync();
-        SetTabStatus(tab, $"Saved search: {displayName}");
+        tab.SetSavedSearchSource(target.Id, target.Name);
+        SetTabStatus(tab, $"Updated saved search: {target.Name}");
     }
 
     private Task SaveCurrentSearchAsync(SearchTabViewModel tab) => SaveSearchAsync(tab, tab.Query);
@@ -1258,21 +2406,26 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 hidden++;
                 continue;
             }
-            if (tab.ContainsResult(result))
-            {
-                duplicates++;
-                continue;
-            }
 
             try
             {
-                result.WindowsPath = _mapper.TryResolve(result) ?? "";
+                // Demo records deliberately display a fictional archive path while
+                // retaining a private synthetic file path for preview and open actions.
+                if (!RuntimeMode.IsDemo || string.IsNullOrWhiteSpace(result.WindowsPath))
+                {
+                    result.WindowsPath = _mapper.TryResolve(result) ?? result.ResolvedPath;
+                }
                 result.IsFavorite = starredKeys?.Contains(HistoryStore.ResultKey(result)) == true;
             }
             catch (Exception ex)
             {
                 AppLogger.Warn("path", $"result path unavailable name=\"{result.FileName}\" path=\"{result.Path}\" error=\"{ex.Message}\"");
                 result.WindowsPath = "";
+            }
+            if (tab.ContainsResult(result))
+            {
+                duplicates++;
+                continue;
             }
             accepted.Add(result);
             added++;
@@ -1433,7 +2586,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             await _iconLoadGate.WaitAsync(token);
             enteredGate = true;
-            var icon = await Task.Run(() => WindowsShellIconService.FileTypeIcon(Path.GetExtension(item.Name), item.IsFolder), token);
+            var icon = await Task.Run(() => item.IsRecycleBinFolder
+                ? WindowsShellIconService.RecycleBinIcon()
+                : WindowsShellIconService.FileTypeIcon(Path.GetExtension(item.Name), item.IsFolder), token);
             if (icon != null)
             {
                 await Dispatcher.UIThread.InvokeAsync(() => ApplyCachedBrowserIcon(key, item, icon));
@@ -1470,13 +2625,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private static string IconCacheKey(BrowserItem item) =>
-        item.IsFolder
+        item.IsRecycleBinFolder
+            ? "__recycle_bin__"
+            : item.IsFolder
             ? "__folder__"
             : string.IsNullOrWhiteSpace(Path.GetExtension(item.Name)) ? "__file__" : Path.GetExtension(item.Name).ToLowerInvariant();
 
     private static (string? SortBy, string SortDirection) ServerSortFor(SearchTabViewModel tab) =>
         tab.PrimarySortKey switch
         {
+            // Folder groups paints directories from the dedicated alphabetical
+            // directory query. Fetch its file half newest-first so the result set
+            // and its order are identical regardless of which index supplied it.
+            "folder" or "recent" => ("modified", "desc"),
             "modified" => ("modified", "desc"),
             "name" => ("name", "asc"),
             "size" => ("size", "desc"),
@@ -1484,9 +2645,58 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         };
 
     // Qsirch's bare query searches indexed document content as well as filenames.
-    // The explicit name field keeps the default search fast and filename-only.
-    private static string BuildServerQuery(string query, bool searchContents) =>
-        searchContents ? query : $"name:\"{query.Replace("\"", "\\\"")}\"";
+    // Quoting a content search preserves the user's phrase; the explicit name field
+    // keeps the default search fast and filename-only.
+    private static string BuildServerQuery(string query, bool searchContents, bool exactMatch)
+    {
+        var escapedQuery = query.Replace("\"", "\\\"");
+        return searchContents
+            ? exactMatch ? $"\"{escapedQuery}\"" : query
+            : $"name:\"{escapedQuery}\"";
+    }
+
+    private static SearchProviderScope CreateSearchProviderScope(SearchTabViewModel tab) => new(
+        tab.ScopePaths.ToList(),
+        tab.ExcludedScopePaths.ToList());
+
+    public async Task RemoveRecentSearchAsync(string query)
+    {
+        await Task.Run(() => _history.DeleteRecentSearch(query));
+        await RefreshRecentSearchesAsync();
+        IsRecentSearchesOpen = false;
+    }
+
+    private async Task<string?> ResolveSearchScopeAsync(string scopeInput, CancellationToken cancellationToken)
+    {
+        var mappedPath = _mapper.TryResolveNasSearchPath(scopeInput);
+        if (!string.IsNullOrWhiteSpace(mappedPath))
+        {
+            return mappedPath;
+        }
+
+        var directPath = ResolveScopePath(scopeInput);
+        if (!string.IsNullOrWhiteSpace(directPath))
+        {
+            return directPath;
+        }
+
+        var folders = await _client.SearchDirectoriesAsync(scopeInput, 20, cancellationToken);
+        var exact = folders.FirstOrDefault(folder => folder.FileName.Equals(scopeInput, StringComparison.OrdinalIgnoreCase));
+        return exact?.Path ?? (folders.Count == 1 ? folders[0].Path : null);
+    }
+
+    private static (string Query, string? ScopeInput) ParseSearchInput(string? input)
+    {
+        var text = (input ?? "").Trim();
+        var match = TrailingScopeClause.Match(text);
+        if (!match.Success)
+        {
+            return (text, null);
+        }
+
+        var scope = match.Groups["quoted"].Success ? match.Groups["quoted"].Value : match.Groups["path"].Value;
+        return (text[..match.Index].Trim(), scope.Trim());
+    }
 
     private static IReadOnlyList<SearchResult> RecentResults(IEnumerable<SearchResult> results, DateTime cutoff) =>
         results.Where(result => result.ModifiedDate is { } modified && modified.Date >= cutoff).ToList();
@@ -1502,6 +2712,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             SetPreview(result);
         }
+        if (ReferenceEquals(tab, SelectedSearchTab) &&
+            e.PropertyName is nameof(SearchTabViewModel.ScopePath) or
+                nameof(SearchTabViewModel.ScopePaths) or
+                nameof(SearchTabViewModel.ExcludedScopePaths))
+        {
+            SyncNavigationScopeSelection(tab);
+        }
         if (e.PropertyName == nameof(SearchTabViewModel.Query) &&
             string.IsNullOrWhiteSpace(tab.Query) &&
             _config.Behavior.ClearResultsWithQuery &&
@@ -1509,7 +2726,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             _ = ClearSearchTabAsync(tab);
         }
-        if (e.PropertyName == nameof(SearchTabViewModel.SearchContents) &&
+        if ((e.PropertyName is nameof(SearchTabViewModel.SearchContents) or nameof(SearchTabViewModel.ExactMatch)) &&
             !string.IsNullOrWhiteSpace(tab.Query) &&
             !tab.IsSearching)
         {
@@ -1519,10 +2736,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             nameof(SearchTabViewModel.SelectedViewMode) or
             nameof(SearchTabViewModel.SelectedSortMode) or
             nameof(SearchTabViewModel.SortSpecification) or
+            nameof(SearchTabViewModel.TypeFilterOptions) or
             nameof(SearchTabViewModel.DateFrom) or
             nameof(SearchTabViewModel.DateTo) or
             nameof(SearchTabViewModel.ExactMatch) or
-            nameof(SearchTabViewModel.SearchContents))
+            nameof(SearchTabViewModel.SearchContents) or
+            nameof(SearchTabViewModel.ScopePaths) or
+            nameof(SearchTabViewModel.ExcludedScopePaths))
         {
             PersistPinnedTabs();
         }
@@ -1549,7 +2769,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task NavigateUpAsync()
     {
-        var parent = NasFileBrowser.GetParentFolder(BrowserLocation);
+        var parent = NasFileBrowser.GetParentFolder(ResolveBrowserLocation(BrowserLocation));
         if (parent == null)
         {
             return;
@@ -1581,13 +2801,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        var location = _mapper.ResolveBrowserPath((BrowserLocation ?? "").Trim());
+        if (IsHomeLocation(BrowserLocation))
+        {
+            ShowHomeDriveOverview(addToHistory);
+            return;
+        }
+
+        var location = ResolveBrowserLocation((BrowserLocation ?? "").Trim());
         if (string.IsNullOrWhiteSpace(location))
         {
             return;
         }
 
-        if (!location.Equals(BrowserLocation, StringComparison.OrdinalIgnoreCase))
+        if (!RuntimeMode.IsDemo && !location.Equals(BrowserLocation, StringComparison.OrdinalIgnoreCase))
         {
             BrowserLocation = location;
         }
@@ -1632,7 +2858,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     {
                         BrowserItems.Add(item);
                     }
-                    QueueBrowserIcons(visibleBatch, token);
                     Status = $"Scanning Recycle Bin... {BrowserItems.Count:n0} files found";
                     browserTab.Status = Status;
                 });
@@ -1647,9 +2872,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 return;
             }
 
-            BrowserLocation = listing.FolderPath;
-            browserTab.SetBrowseLocation(BrowserLocation);
-            UpdateBrowserBreadcrumbs(listing.FolderPath);
+            var displayLocation = DisplayBrowserLocation(listing.FolderPath);
+            BrowserLocation = displayLocation;
+            browserTab.SetBrowseLocation(displayLocation);
+            IsAddressNavigationPending = false;
+            UpdateBrowserBreadcrumbs(displayLocation);
             // Swap completed folder data in one step. Clearing a shared observable
             // collection while hidden browser views retain a selection can crash Avalonia.
             var visibleItems = listing.Items
@@ -1663,7 +2890,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             browserTab.Status = Status;
             if (addToHistory)
             {
-                RecordBrowserLocation(listing.FolderPath);
+                RecordBrowserLocation(displayLocation);
             }
             AppLogger.Info("browse", $"folder=\"{listing.FolderPath}\" items={listing.Items.Count} skipped={listing.SkippedCount}");
         }
@@ -1687,32 +2914,140 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         await BrowseAsync();
     }
 
+    private void ShowHomeDriveOverview(bool addToHistory = true)
+    {
+        if (RuntimeMode.IsDemo)
+        {
+            ShowDemoHomeOverview(addToHistory);
+            return;
+        }
+
+        var browserTab = SelectedSearchTab;
+        if (browserTab == null)
+        {
+            return;
+        }
+
+        IsNavigationVisible = true;
+        BrowserLocation = HomeNavigationPath;
+        browserTab.SetBrowseLocation(BrowserLocation);
+        IsAddressNavigationPending = false;
+        var homeItems = new List<BrowserItem>();
+        if (!OperatingSystem.IsWindows())
+        {
+            var userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrWhiteSpace(userHome) && Directory.Exists(userHome))
+            {
+                homeItems.Add(new BrowserItem("Home folder", userHome, true, 0, DateTime.MinValue));
+            }
+
+            if (_config.Behavior.ShowLocalNavigationFolders)
+            {
+                homeItems.AddRange(LocalNavigationFolders()
+                    .Where(folder => !folder.Path.Equals(userHome, StringComparison.OrdinalIgnoreCase))
+                    .Select(folder => new BrowserItem(folder.Name, folder.Path, true, 0, DateTime.MinValue)));
+            }
+        }
+
+        homeItems.AddRange(ReadyWindowsDrives()
+            .Where(ShouldShowNavigationDrive)
+            .OrderBy(drive => drive.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Select(drive => new BrowserItem(drive.Name, drive.Path, true, 0, DateTime.MinValue)
+            {
+                IsDrive = true,
+                DriveUsedFraction = drive.UsedFraction,
+                DriveSpaceText = drive.SpaceText,
+                IconSource = WindowsShellIconService.DriveIcon(drive.Type),
+            }));
+        BrowserItems = new ObservableCollection<BrowserItem>(homeItems);
+        SelectedBrowserItem = null;
+        BrowserBreadcrumbs.Clear();
+        BrowserBreadcrumbs.Add(new BrowserBreadcrumb("Home", HomeNavigationPath, true));
+        if (addToHistory)
+        {
+            RecordBrowserLocation(HomeNavigationPath);
+        }
+        Status = OperatingSystem.IsWindows()
+            ? $"Home - {BrowserItems.Count:n0} drives"
+            : $"Home - {BrowserItems.Count:n0} locations";
+        browserTab.Status = Status;
+        AppLogger.Info("browse", $"home drive overview drives={BrowserItems.Count}");
+    }
+
+    private static bool IsHomeLocation(string? location) =>
+        HomeNavigationPath.Equals(location?.Trim(), StringComparison.OrdinalIgnoreCase);
+
     private void EnsureNavigationRoots()
     {
-        var nasRoot = NasNavigationRoot(_config.Host);
+        if (RuntimeMode.IsDemo)
+        {
+            EnsureDemoNavigationRoots();
+            return;
+        }
+
+        if (!NavigationRoots.Any(node => node.IsHome))
+        {
+            NavigationRoots.Add(new NavigationTreeNode
+            {
+                Name = "Home",
+                FullPath = HomeNavigationPath,
+                IsHome = true,
+            });
+        }
+
+        var nasRoot = OperatingSystem.IsWindows() ? NasNavigationRoot(_config.Host) : null;
         if (!string.IsNullOrWhiteSpace(nasRoot) &&
             !NavigationRoots.Any(node => node.FullPath.Equals(nasRoot, StringComparison.OrdinalIgnoreCase)))
         {
-            NavigationRoots.Add(CreateNavigationNode(NavigationDisplayName(nasRoot), nasRoot));
+            // The NAS hostname is a container of shares. Its children must retain
+            // that share-root identity so each share can expose NAS recovery folders.
+            NavigationRoots.Add(CreateNavigationNode(NavigationDisplayName(nasRoot), nasRoot, isShareRoot: true));
         }
 
-        foreach (var (name, path) in LocalNavigationFolders())
+        if (_config.Behavior.ShowLocalNavigationFolders)
         {
-            if (NavigationRoots.Any(node => node.FullPath.Equals(path, StringComparison.OrdinalIgnoreCase)))
+            foreach (var (name, path) in LocalNavigationFolders())
             {
-                continue;
+                if (NavigationRoots.Any(node => node.FullPath.Equals(path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                NavigationRoots.Add(CreateNavigationNode(name, path));
             }
-            NavigationRoots.Add(CreateNavigationNode(name, path));
         }
 
-        var roots = PathMapper.DiscoverWindowsPathMappings()
-            .Select(mapping => NormalizeNavigationRoot(mapping.MappedRoot))
-            .Concat(_config.PathMappings
-            .Where(mapping => !MappingBelongsToConfiguredNas(mapping))
-            .Select(mapping => NormalizeNavigationRoot(mapping.MappedRoot)))
-            .Where(path => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        // Match Explorer's useful baseline: personal folders first, followed by
+        // every ready local, removable, and mapped network drive. Qsirch only
+        // knows NAS shares, but browse mode must not hide the rest of Windows.
+        foreach (var drive in ReadyWindowsDrives().Where(ShouldShowNavigationDrive))
+        {
+            if (!NavigationRoots.Any(node => node.FullPath.Equals(drive.Path, StringComparison.OrdinalIgnoreCase)))
+            {
+                NavigationRoots.Add(CreateNavigationNode(
+                    drive.Name,
+                    drive.Path,
+                    isShareRoot: IsWindowsNasMappedDrive(drive.Path),
+                    isDrive: true,
+                    driveUsedFraction: drive.UsedFraction,
+                    driveSpaceText: drive.SpaceText,
+                    driveType: drive.Type));
+            }
+        }
+
+        var mappedRoots = _config.PathMappings
+            .Where(mapping => !OperatingSystem.IsWindows() || !MappingBelongsToConfiguredNas(mapping))
+            .Select(mapping => new
+            {
+                Name = MappingNavigationDisplayName(mapping),
+                Path = NormalizeNavigationRoot(mapping.MappedRoot),
+                IsNasShare = !OperatingSystem.IsWindows(),
+            })
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.Path) && Path.IsPathFullyQualified(mapping.Path))
+            .GroupBy(mapping => mapping.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
             .ToList();
+        var roots = mappedRoots.Select(mapping => mapping.Path).ToList();
         if (!string.IsNullOrWhiteSpace(BrowserLocation) && Path.IsPathFullyQualified(BrowserLocation) &&
             !roots.Any(path => BrowserLocation.StartsWith(path, StringComparison.OrdinalIgnoreCase)))
         {
@@ -1725,14 +3060,82 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             {
                 continue;
             }
-            NavigationRoots.Add(CreateNavigationNode(NavigationDisplayName(root), root));
+            var mappedRoot = mappedRoots.FirstOrDefault(mapping => mapping.Path.Equals(root, StringComparison.OrdinalIgnoreCase));
+            NavigationRoots.Add(CreateNavigationNode(
+                mappedRoot?.Name ?? NavigationDisplayName(root),
+                root,
+                isShareRoot: mappedRoot?.IsNasShare == true));
         }
 
         SortNavigationRoots();
     }
 
+    private void EnsureDemoNavigationRoots()
+    {
+        if (NavigationRoots.Count > 0)
+        {
+            return;
+        }
+
+        NavigationRoots.Add(new NavigationTreeNode
+        {
+            Name = "Home",
+            FullPath = HomeNavigationPath,
+            IsHome = true,
+        });
+        NavigationRoots.Add(CreateNavigationNode(
+            DemoCatalog.NavigationDisplayName,
+            RuntimeMode.DemoArchiveRoot,
+            isShareRoot: true,
+            isDrive: true,
+            driveUsedFraction: 0.42,
+            driveSpaceText: "2.3 GB free of 4 GB",
+            driveType: DriveType.Fixed));
+    }
+
+    private async Task LoadDemoNavigationAsync()
+    {
+        var archive = NavigationRoots.FirstOrDefault(node => node.FullPath.Equals(RuntimeMode.DemoArchiveRoot, StringComparison.OrdinalIgnoreCase));
+        if (archive == null)
+        {
+            return;
+        }
+
+        await LoadNavigationChildrenAsync(archive);
+        await DiscoverRecycleBinAsync(archive);
+        archive.IsExpanded = true;
+    }
+
+    private void ShowDemoHomeOverview(bool addToHistory)
+    {
+        var browserTab = SelectedSearchTab;
+        if (browserTab == null)
+        {
+            return;
+        }
+
+        var items = Directory.EnumerateDirectories(RuntimeMode.DemoArchiveRoot)
+            .Where(path => !Path.GetFileName(path).StartsWith('@'))
+            .OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase)
+            .Select(path => new BrowserItem(Path.GetFileName(path), path, true, 0, Directory.GetLastWriteTime(path)))
+            .ToList();
+        BrowserItems = new ObservableCollection<BrowserItem>(items);
+        SelectedBrowserItem = null;
+        BrowserLocation = HomeNavigationPath;
+        browserTab.SetBrowseLocation(HomeNavigationPath);
+        BrowserBreadcrumbs.Clear();
+        BrowserBreadcrumbs.Add(new BrowserBreadcrumb("Home", HomeNavigationPath, true));
+        if (addToHistory)
+        {
+            RecordBrowserLocation(HomeNavigationPath);
+        }
+        Status = $"Demo archive - {items.Count:n0} folders";
+        browserTab.Status = Status;
+    }
+
     private void RefreshNavigationRoots()
     {
+        CancelNavigationLoads();
         NavigationRoots.Clear();
         EnsureNavigationRoots();
         AppLogger.Info("browse", $"navigation roots refreshed count={NavigationRoots.Count} host=\"{_config.Host}\"");
@@ -1740,7 +3143,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task LoadNasNavigationRootAsync()
     {
-        var nasRoot = NasNavigationRoot(_config.Host);
+        if (!OperatingSystem.IsWindows())
+        {
+            if (IsNasConnectionConfigured)
+            {
+                // Linux can search Qsirch directly, but folder browsing uses the
+                // user's existing SMB mounts rather than Windows UNC enumeration.
+                SetNasNavigationState(true, "Search online; browse mounted SMB shares.");
+            }
+            else
+            {
+                SetNasNavigationState(false, "NAS search is not configured.");
+            }
+            return;
+        }
+
+        var nasRoot = OperatingSystem.IsWindows() ? NasNavigationRoot(_config.Host) : null;
         if (string.IsNullOrWhiteSpace(nasRoot))
         {
             SetNasNavigationState(false, "NAS navigation is not configured.");
@@ -1768,7 +3186,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             try
             {
                 await LoadNavigationChildrenAsync(root);
-                FlattenNasNavigationRoot(root);
+                await FlattenNasNavigationRootAsync(root);
+                foreach (var mappedShare in NavigationRoots
+                    .Where(node => node.IsDrive && node.IsShareRoot && !node.ChildrenLoaded)
+                    .ToList())
+                {
+                    await LoadNavigationChildrenAsync(mappedShare);
+                    mappedShare.IsExpanded = true;
+                }
             }
             finally
             {
@@ -1796,7 +3221,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         return NavigationDisplayName(path);
     }
 
-    private void FlattenNasNavigationRoot(NavigationTreeNode root)
+    private async Task FlattenNasNavigationRootAsync(NavigationTreeNode root)
     {
         if (!root.ChildrenLoaded)
         {
@@ -1836,6 +3261,41 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
 
         SortNavigationRoots();
+        await Task.WhenAll(shares.Select(share => DiscoverRecycleBinAsync(share)));
+
+        // On Windows the NAS host is flattened into its mapped drive roots.
+        // Load those roots once so the Recycle Bin is visible beneath X: without
+        // ever exposing the NAS share name in the navigation tree.
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (var share in shares)
+            {
+                await LoadNavigationChildrenAsync(share);
+                share.IsExpanded = true;
+            }
+        }
+    }
+
+    private async Task DiscoverRecycleBinAsync(NavigationTreeNode node, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!node.IsShareRoot || node.Children.Any(child => child.IsRecoveryFolder))
+        {
+            return;
+        }
+
+        var recyclePath = await Task.Run(() =>
+            new[] { "@Recycle", "@RecycleBin", "#recycle" }
+                .Select(name => Path.Combine(node.FullPath, name))
+                .FirstOrDefault(Directory.Exists), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(recyclePath) || node.Children.Any(child => child.IsRecoveryFolder))
+        {
+            return;
+        }
+
+        node.Children.Add(CreateNavigationNode("Recycle Bin", recyclePath, isRecoveryFolder: true));
+        AppLogger.Info("browse", $"navigation recycle bin discovered path=\"{recyclePath}\"");
     }
 
     private void SortNavigationRoots()
@@ -1858,20 +3318,29 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private int NavigationRootGroup(NavigationTreeNode node)
     {
+        if (node.IsHome)
+        {
+            return -1;
+        }
+
         if (LocalNavigationFolders().Any(folder =>
                 folder.Path.Equals(node.FullPath, StringComparison.OrdinalIgnoreCase)))
         {
             return 0;
         }
 
-        return IsDriveRoot(NormalizeNavigationRoot(node.FullPath)) ? 1 : 2;
+        return node.IsDrive ? 1 : 2;
     }
 
     private NavigationTreeNode CreateNavigationNode(
         string name,
         string path,
         bool isRecoveryFolder = false,
-        bool isShareRoot = false)
+        bool isShareRoot = false,
+        bool isDrive = false,
+        double driveUsedFraction = 0,
+        string driveSpaceText = "",
+        DriveType? driveType = null)
     {
         var node = new NavigationTreeNode
         {
@@ -1879,7 +3348,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             FullPath = _mapper.ResolveBrowserPath(path),
             IsRecoveryFolder = isRecoveryFolder,
             IsShareRoot = isShareRoot,
-            IconSource = isRecoveryFolder ? RecycleBinIcon() : null,
+            IsDrive = isDrive,
+            DriveUsedFraction = driveUsedFraction,
+            DriveSpaceText = driveSpaceText,
+            IconSource = isRecoveryFolder
+                ? RecycleBinIcon()
+                : isDrive ? WindowsShellIconService.DriveIcon(driveType ?? DriveType.Fixed) : null,
             ExpandAsync = LoadNavigationChildrenAsync,
         };
         if (!_config.Behavior.FlattenRecycleBin || !IsRecycleBinRootPath(node.FullPath))
@@ -1904,6 +3378,35 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     {
         var root = NasNavigationRoot(_config.Host);
         return !string.IsNullOrWhiteSpace(root) && root.Equals(path, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsNasBackedPath(string path)
+    {
+        if (RuntimeMode.IsDemo && DemoCatalog.IsDemoPath(ResolveBrowserLocation(path)))
+        {
+            return true;
+        }
+
+        var normalized = _mapper.ResolveBrowserPath(path ?? "").TrimEnd('\\', '/');
+        if (string.IsNullOrWhiteSpace(normalized)) return false;
+
+        if (OperatingSystem.IsWindows())
+        {
+            var driveRoot = Path.GetPathRoot(normalized);
+            if (!string.IsNullOrWhiteSpace(driveRoot) && IsWindowsNasMappedDrive(driveRoot)) return true;
+            if (!normalized.StartsWith(@"\\", StringComparison.OrdinalIgnoreCase)) return false;
+
+            var parts = normalized.TrimStart('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length >= 2 && NasIdentity.HostsMatch(parts[0], _config.Host);
+        }
+
+        return _config.PathMappings.Any(mapping =>
+        {
+            var mountPoint = (mapping.MappedRoot ?? "").TrimEnd('\\', '/');
+            return !string.IsNullOrWhiteSpace(mountPoint) &&
+                   (normalized.Equals(mountPoint, StringComparison.OrdinalIgnoreCase) ||
+                    normalized.StartsWith(mountPoint + "/", StringComparison.OrdinalIgnoreCase));
+        });
     }
 
     private void SetNasNavigationState(bool online, string status)
@@ -1960,7 +3463,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private static bool IsRecycleFolder(string name) =>
         name.Equals("@Recycle", StringComparison.OrdinalIgnoreCase) ||
         name.Equals("@RecycleBin", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("#recycle", StringComparison.OrdinalIgnoreCase);
+        name.Equals("#recycle", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSnapshotFolder(string name) =>
         name.Equals("@Recently-Snapshot", StringComparison.OrdinalIgnoreCase);
@@ -1975,10 +3479,20 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private static bool IsRecycleFolderPath(string path) =>
         path.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).Any(IsRecycleFolder);
 
+    private static bool IsLocalTrashPath(string path)
+    {
+        var normalizedPath = (path ?? "").Replace('\\', '/').TrimEnd('/');
+        return !OperatingSystem.IsWindows() &&
+               normalizedPath.EndsWith("/.local/share/Trash", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRecycleBinPath(string path) => IsRecycleFolderPath(path) || IsLocalTrashPath(path);
+
     private static bool IsRecycleBinRootPath(string path)
     {
         var trimmed = (path ?? "").Trim().TrimEnd('\\', '/');
-        return IsRecycleFolder(Path.GetFileName(trimmed));
+        var name = Path.GetFileName(trimmed);
+        return IsRecycleFolder(name) && !name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsQSurferSafetyCopy(SearchResult result) =>
@@ -2041,6 +3555,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         _browserHistory.AddRange(state.History);
         _browserHistoryIndex = state.HistoryIndex;
         BrowserLocation = state.Location;
+        tab.SetBrowseLocation(BrowserLocation);
         SelectedBrowserItem = state.SelectedItem;
         UpdateNavigationHistoryCommands();
     }
@@ -2140,6 +3655,266 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private bool IsMountedShareRoot(string path) =>
+        !OperatingSystem.IsWindows() && _config.PathMappings.Any(mapping =>
+            NormalizeNavigationRoot(mapping.MappedRoot).Equals(
+                NormalizeNavigationRoot(path),
+                StringComparison.OrdinalIgnoreCase));
+
+    private void AutoConfigureLinuxMountMappings()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        _config.PathMappings ??= [];
+        var changedMappings = 0;
+        foreach (var mapping in _config.PathMappings)
+        {
+            if (LinuxNativeCifsMountService.IsMounted(mapping.MappedRoot) ||
+                LinuxNativeCifsMountService.HasPersistentSystemMount(mapping.MappedRoot))
+            {
+                continue;
+            }
+
+            var persistentPath = LinuxNativeCifsMountService.PersistentMountPoint(mapping.ShareRoot, _config.Host);
+            if (!string.IsNullOrWhiteSpace(persistentPath) &&
+                !persistentPath.Equals(mapping.MappedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                mapping.MappedRoot = persistentPath;
+                changedMappings++;
+            }
+        }
+
+        var addedMappings = 0;
+        foreach (var mountedShare in LinuxNativeCifsMountService.DiscoverMountedShares(_config.Host))
+        {
+            var shareRoot = mountedShare.ShareRoot.TrimEnd('\\');
+            if (_config.PathMappings.Any(mapping =>
+                (mapping.ShareRoot ?? "").TrimEnd('\\').Equals(shareRoot, StringComparison.OrdinalIgnoreCase)))
+            {
+                // A stored manual mapping is intentional and always wins.
+                continue;
+            }
+
+            _config.PathMappings.Add(new PathMapping
+            {
+                ShareRoot = shareRoot,
+                MappedRoot = mountedShare.MountPoint,
+            });
+            addedMappings++;
+        }
+
+        if (addedMappings == 0 && changedMappings == 0)
+        {
+            return;
+        }
+
+        ConfigStore.Save(_config);
+        AppLogger.Info("path", $"reconciled {addedMappings + changedMappings} Linux CIFS path mapping(s)");
+    }
+
+    private async Task<string> EnsureLinuxShareMountedAsync(string requestedPath)
+    {
+        if (OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(requestedPath))
+        {
+            return requestedPath;
+        }
+
+        var mapping = _config.PathMappings
+            .OrderByDescending(item => (item.MappedRoot ?? "").Length)
+            .FirstOrDefault(item => IsPathWithinRoot(requestedPath, item.MappedRoot));
+        if (mapping is null)
+        {
+            return requestedPath;
+        }
+
+        var migrateLegacyMount = LinuxNativeCifsMountService.IsLegacyQSurferMountPoint(mapping.MappedRoot);
+        if (!migrateLegacyMount && (LinuxNativeCifsMountService.IsMounted(mapping.MappedRoot) ||
+            LinuxNativeCifsMountService.HasPersistentSystemMount(mapping.MappedRoot)))
+        {
+            return requestedPath;
+        }
+
+        await _linuxMountGate.WaitAsync();
+        try
+        {
+            if (!migrateLegacyMount && (LinuxNativeCifsMountService.IsMounted(mapping.MappedRoot) ||
+                LinuxNativeCifsMountService.HasPersistentSystemMount(mapping.MappedRoot)))
+            {
+                return requestedPath;
+            }
+
+            Status = $"Reconnecting {MappingNavigationDisplayName(mapping)}...";
+            var originalRoot = mapping.MappedRoot;
+            var preserveBootMount = migrateLegacyMount && LinuxNativeCifsMountService.HasPersistentSystemMount(originalRoot);
+            var mount = await LinuxNativeCifsMountService.MountAsync(
+                mapping.ShareRoot,
+                _config.Host,
+                _config.User,
+                _config.Password,
+                reconnectAfterReboot: preserveBootMount,
+                replacedMountPoint: migrateLegacyMount ? originalRoot : null);
+            if (!mount.Succeeded)
+            {
+                throw new IOException(mount.Error);
+            }
+
+            mapping.MappedRoot = mount.MountPoint;
+            ConfigStore.Save(_config);
+            RefreshNavigationRoots();
+            return ReplacePathRoot(requestedPath, originalRoot, mount.MountPoint);
+        }
+        finally
+        {
+            _linuxMountGate.Release();
+        }
+    }
+
+    private static bool IsPathWithinRoot(string path, string root)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        var normalizedPath = Path.GetFullPath(path).TrimEnd('/');
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd('/');
+        return normalizedPath.Equals(normalizedRoot, StringComparison.Ordinal) ||
+               normalizedPath.StartsWith(normalizedRoot + "/", StringComparison.Ordinal);
+    }
+
+    private static string ReplacePathRoot(string path, string root, string replacement)
+    {
+        if (!IsPathWithinRoot(path, root))
+        {
+            return path;
+        }
+
+        var normalizedPath = Path.GetFullPath(path);
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd('/');
+        var relativePath = normalizedPath[normalizedRoot.Length..].TrimStart('/');
+        return string.IsNullOrWhiteSpace(relativePath) ? replacement : Path.Combine(replacement, relativePath);
+    }
+
+    private bool IsWindowsNasMappedDrive(string path)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(_config.Host))
+        {
+            return false;
+        }
+
+        var configuredHost = NasIdentity.NormalizeHost(_config.Host);
+        return !string.IsNullOrWhiteSpace(configuredHost) && PathMapper.DiscoverWindowsDriveMappings()
+            .Any(mapping =>
+                NormalizeNavigationRoot(mapping.DriveRoot).Equals(NormalizeNavigationRoot(path), StringComparison.OrdinalIgnoreCase) &&
+                NasIdentity.HostsMatch(configuredHost, NasIdentity.NormalizeHost(mapping.NetworkPath)));
+    }
+
+
+    private static string MappingNavigationDisplayName(PathMapping mapping)
+    {
+        var parts = (mapping.ShareRoot ?? "").Trim().Trim('\\', '/')
+            .Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 0 ? NavigationDisplayName(mapping.MappedRoot) : parts[^1];
+    }
+
+    private static IReadOnlyList<ReadyWindowsDrive> ReadyWindowsDrives()
+    {
+        var drives = new List<ReadyWindowsDrive>();
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (!drive.IsReady || drive.DriveType is DriveType.NoRootDirectory or DriveType.Unknown)
+                {
+                    continue;
+                }
+
+                var root = drive.RootDirectory.FullName;
+                if (!OperatingSystem.IsWindows() && !IsLinuxBrowsableMount(root))
+                {
+                    continue;
+                }
+                var driveLetter = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var label = string.IsNullOrWhiteSpace(drive.VolumeLabel)
+                    ? DriveTypeDisplayName(drive.DriveType)
+                    : drive.VolumeLabel.Trim();
+                var totalBytes = drive.TotalSize;
+                var freeBytes = drive.AvailableFreeSpace;
+                var usedFraction = totalBytes > 0
+                    ? Math.Clamp(1d - (double)freeBytes / totalBytes, 0d, 1d)
+                    : 0d;
+                drives.Add(new ReadyWindowsDrive(
+                    $"{label} ({driveLetter})",
+                    root,
+                    usedFraction,
+                    $"{FormatDriveBytes(freeBytes)} free of {FormatDriveBytes(totalBytes)}",
+                    drive.DriveType));
+            }
+            catch (IOException)
+            {
+                // A removable or network drive can disappear while the tree is built.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Keep inaccessible devices out of the navigation tree.
+            }
+        }
+        return drives;
+    }
+
+    private bool ShouldShowNavigationDrive(ReadyWindowsDrive drive) =>
+        _config.Behavior.ShowLocalNavigationDrives || drive.Type == DriveType.Network;
+
+    private static bool IsLinuxBrowsableMount(string root)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        var normalized = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrEmpty(normalized) || normalized == "/")
+        {
+            return false;
+        }
+
+        var systemRoots = new[]
+        {
+            "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/opt", "/proc", "/root",
+            "/run", "/sbin", "/snap", "/sys", "/tmp", "/usr", "/var"
+        };
+        return !systemRoots.Any(systemRoot =>
+            normalized.Equals(systemRoot, StringComparison.Ordinal) ||
+            normalized.StartsWith(systemRoot + "/", StringComparison.Ordinal));
+    }
+
+    private static string DriveTypeDisplayName(DriveType driveType) => driveType switch
+    {
+        DriveType.Fixed => "Local Disk",
+        DriveType.Network => "Network drive",
+        DriveType.Removable => "Removable Disk",
+        DriveType.CDRom => "DVD Drive",
+        _ => "Drive",
+    };
+
+    private static string FormatDriveBytes(long bytes)
+    {
+        var units = new[] { "B", "KB", "MB", "GB", "TB", "PB" };
+        double value = Math.Max(0, bytes);
+        var index = 0;
+        while (value >= 1024 && index < units.Length - 1)
+        {
+            value /= 1024;
+            index++;
+        }
+        return index == 0 ? $"{value:0} {units[index]}" : $"{value:0.#} {units[index]}";
+    }
+
+    private sealed record ReadyWindowsDrive(string Name, string Path, double UsedFraction, string SpaceText, DriveType Type);
+
     private static string NormalizeNavigationRoot(string path)
     {
         var trimmed = (path ?? "").Trim();
@@ -2166,6 +3941,89 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         await OpenPathAsync(item.FullPath);
     }
 
+    public async Task OpenBrowserItemsInNewTabsAsync(IEnumerable<BrowserItem> source)
+    {
+        var items = source
+            .Where(item => !string.IsNullOrWhiteSpace(item.FullPath))
+            .DistinctBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        var requestedCount = items.Count;
+        var limit = Math.Clamp(_config.Behavior.MaxBulkOpenTabs, 1, 100);
+        items = items.Take(limit).ToList();
+
+        foreach (var item in items)
+        {
+            var location = item.IsFolder ? item.FullPath : Path.GetDirectoryName(item.FullPath);
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                continue;
+            }
+
+            var tab = AddSearchTab();
+            SelectedSearchTab = tab;
+            IsNavigationVisible = true;
+            BrowserLocation = location;
+            await BrowseAsync();
+
+            if (!item.IsFolder)
+            {
+                SelectedBrowserItem = BrowserItems.FirstOrDefault(candidate =>
+                    candidate.FullPath.Equals(item.FullPath, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        Status = requestedCount > items.Count
+            ? $"Opened {items.Count:n0} of {requestedCount:n0} items. Increase Folders opened at once in Settings to open more."
+            : items.Count == 1 ? "Opened in a new QSurfer tab" : $"Opened {items.Count:n0} items in new QSurfer tabs";
+    }
+
+    public async Task ShowBrowserItemsInFileManagerAsync(IEnumerable<BrowserItem> source)
+    {
+        var items = source
+            .Where(item => !string.IsNullOrWhiteSpace(item.FullPath))
+            .DistinctBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            var path = item.FullPath;
+            if (!OperatingSystem.IsWindows())
+            {
+                path = _mapper.ResolveBrowserPath(path);
+                if (IsUncPath(path))
+                {
+                    continue;
+                }
+
+                await OpenPathAsync(item.IsFolder ? path : Path.GetDirectoryName(path) ?? path);
+                continue;
+            }
+
+            try
+            {
+                var arguments = item.IsFolder ? $"\"{path}\"" : $"/select,\"{path}\"";
+                Process.Start(new ProcessStartInfo("explorer.exe", arguments) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("browse", ex, $"show location failed path=\"{path}\"");
+                Status = ex.Message;
+                return;
+            }
+        }
+
+        Status = items.Count == 1 ? "Showing location" : $"Showing {items.Count:n0} items in File Explorer";
+    }
+
     public void CopyBrowserItems(IEnumerable<BrowserItem> items, bool cut)
     {
         _browserClipboard.Clear();
@@ -2181,7 +4039,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         if (string.IsNullOrWhiteSpace(BrowserLocation)) return;
         try
         {
-            await _browser.CreateFolderAsync(BrowserLocation, name);
+            await _browser.CreateFolderAsync(ResolveBrowserLocation(BrowserLocation), name);
             await BrowseAsync(addToHistory: false);
             Status = "Folder created";
         }
@@ -2276,7 +4134,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         if (_browserClipboard.Count == 0 || string.IsNullOrWhiteSpace(BrowserLocation)) return;
         try
         {
-            var count = await _browser.CopyAsync(_browserClipboard, BrowserLocation, _browserClipboardIsCut);
+            var count = await _browser.CopyAsync(_browserClipboard, ResolveBrowserLocation(BrowserLocation), _browserClipboardIsCut);
             if (_browserClipboardIsCut)
             {
                 _browserClipboard.Clear();
@@ -2315,6 +4173,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return Task.CompletedTask;
         }
 
+        if (!OperatingSystem.IsWindows())
+        {
+            path = _mapper.ResolveBrowserPath(path);
+            if (IsUncPath(path))
+            {
+                Status = "This path is not mapped to a local CIFS mount yet.";
+                return Task.CompletedTask;
+            }
+        }
+
         try
         {
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
@@ -2327,6 +4195,37 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
         return Task.CompletedTask;
     }
+
+    public async Task EmptyLocalRecycleBinAsync()
+    {
+        if (!IsLocalRecycleBinView)
+        {
+            return;
+        }
+
+        try
+        {
+            await _browser.EmptyLocalRecycleBinAsync(ResolveBrowserLocation(BrowserLocation));
+            await BrowseAsync(addToHistory: false);
+            Status = "Recycle Bin emptied";
+            AppLogger.Info("browse", $"emptied local recycle bin path=\"{BrowserLocation}\"");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("browse", ex, $"empty recycle bin failed path=\"{BrowserLocation}\"");
+            Status = ex.Message;
+        }
+    }
+
+    public bool SupportsVersionHistory(SearchResult? result)
+    {
+        if (result == null) return false;
+        var path = ResolveWindowsPath(result);
+        return !string.IsNullOrWhiteSpace(path) && IsNasBackedPath(path);
+    }
+
+    private static bool IsUncPath(string path) =>
+        path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal);
 
     private static bool PathRootIsAvailable(string path)
     {
@@ -2355,6 +4254,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 DateTo = tab.DateTo,
                 ExactMatch = tab.ExactMatch,
                 SearchContents = tab.SearchContents,
+                ScopePaths = tab.ScopePaths.ToList(),
+                ExcludedScopePaths = tab.ExcludedScopePaths.ToList(),
             })
             .ToList();
         ConfigStore.Save(_config);
@@ -2450,6 +4351,68 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             ? null
             : FlattenFavoriteNodes(nodes).FirstOrDefault(node => FavoriteNodeKey(node) == key);
 
+    private void SyncNavigationScopeSelection(SearchTabViewModel tab)
+    {
+        var scopes = tab.ScopePaths.Select(NormalizeNasScope).ToList();
+        var excludedScopes = tab.ExcludedScopePaths.Select(NormalizeNasScope).ToList();
+        foreach (var node in FlattenNavigationNodes(NavigationRoots))
+        {
+            var scope = node.IsHome || node.IsPlaceholder || string.IsNullOrWhiteSpace(node.FullPath)
+                ? null
+                : NormalizeNasScope(ResolveScopePath(ResolveBrowserLocation(node.FullPath)));
+            node.IsScopeSelected = !string.IsNullOrWhiteSpace(scope) &&
+                                   IsIncludedByMostSpecificScope(scope, scopes, excludedScopes);
+        }
+    }
+
+    private static bool IsIncludedByMostSpecificScope(
+        string path,
+        IEnumerable<string> includedScopes,
+        IEnumerable<string> excludedScopes)
+    {
+        var mostSpecificLength = -1;
+        bool? decision = null;
+        foreach (var (scope, included) in includedScopes.Select(scope => (scope, true))
+                     .Concat(excludedScopes.Select(scope => (scope, false))))
+        {
+            if (!IsWithinAnyScope(path, [scope]))
+            {
+                continue;
+            }
+
+            if (scope.Length > mostSpecificLength || (scope.Length == mostSpecificLength && !included))
+            {
+                mostSpecificLength = scope.Length;
+                decision = included;
+            }
+        }
+
+        return decision == true;
+    }
+
+    private static string NormalizeNasScope(string? path) =>
+        (path ?? "")
+            .Replace('/', '\\')
+            .Trim()
+            .TrimEnd('*')
+            .Trim('\\');
+
+    private static bool IsWithinAnyScope(string path, IEnumerable<string> scopes) =>
+        scopes.Any(scope => path.Equals(scope, StringComparison.OrdinalIgnoreCase) ||
+                            path.StartsWith(scope + "\\", StringComparison.OrdinalIgnoreCase));
+
+    private static IEnumerable<NavigationTreeNode> FlattenNavigationNodes(IEnumerable<NavigationTreeNode> nodes)
+    {
+        foreach (var node in nodes)
+        {
+            yield return node;
+            foreach (var child in FlattenNavigationNodes(node.Children))
+            {
+                yield return child;
+            }
+        }
+    }
+
     private void BrowserItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         OnPropertyChanged(nameof(HasBrowserItems));
@@ -2468,8 +4431,33 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         int HistoryIndex,
         BrowserItem? SelectedItem);
 
+    private sealed record SearchTabSnapshot(
+        string Query,
+        bool ExactMatch,
+        bool SearchContents,
+        bool IsPinned,
+        IReadOnlyList<string> SelectedTypeNames,
+        string ViewKey,
+        string SortSpecification,
+        string ScopeKey,
+        string ScopePath,
+        IReadOnlyList<string> ScopePaths,
+        IReadOnlyList<string> ExcludedScopePaths,
+        DateTime? DateFrom,
+        DateTime? DateTo,
+        IReadOnlyList<SearchResult> Results,
+        SearchResult? SelectedResult,
+        int NextOffset,
+        bool CanLoadMore,
+        string Status,
+        bool IsBrowsing,
+        long? SavedSearchId,
+        string SavedSearchName);
+
     public void Dispose()
     {
+        _addressSuggestionCancellation?.Cancel();
+        _addressSuggestionCancellation?.Dispose();
         _nasNavigationRetryTimer.Stop();
         _nasNavigationRetryTimer.Tick -= NasNavigationRetryTimer_Tick;
         foreach (var tab in SearchTabs)
@@ -2478,6 +4466,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
         _browseCancellation?.Cancel();
         _browseCancellation?.Dispose();
+        CancelNavigationLoads();
         _client.Dispose();
         foreach (var icon in _iconCache.Values.Distinct())
         {
@@ -2486,6 +4475,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         _recycleBinIcon?.Dispose();
         _iconCache.Clear();
         _browserItems.CollectionChanged -= BrowserItemsCollectionChanged;
+    }
+
+    private void CancelNavigationLoad(NavigationTreeNode node)
+    {
+        if (_navigationLoadCancellations.Remove(node, out var cancellation))
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelNavigationLoads()
+    {
+        foreach (var cancellation in _navigationLoadCancellations.Values)
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
+        _navigationLoadCancellations.Clear();
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
@@ -2505,3 +4513,30 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 }
+
+public sealed class BrowserPathSuggestion(string name, string path) : INotifyPropertyChanged
+{
+    private bool _isKeyboardSelected;
+
+    public string Name { get; } = name;
+    public string Path { get; } = path;
+
+    public bool IsKeyboardSelected
+    {
+        get => _isKeyboardSelected;
+        set
+        {
+            if (_isKeyboardSelected == value)
+            {
+                return;
+            }
+
+            _isKeyboardSelected = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsKeyboardSelected)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+internal sealed record AddressDirectorySearchCacheEntry(DateTime CreatedUtc, IReadOnlyList<SearchResult> Folders);

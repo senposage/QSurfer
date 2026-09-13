@@ -11,61 +11,92 @@
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel Spacing="4">
       <TextBlock Text="QSurfer settings" FontSize="20" FontWeight="SemiBold" />
-      <TextBlock Text="Settings are kept for this computer. Shared connection defaults remain available for new workstations." Opacity="0.68" TextWrapping="Wrap" />
+      <TextBlock Text="Settings are kept for this user on this computer. Items explicitly marked Global are saved as deployment defaults for new workstations." Opacity="0.68" TextWrapping="Wrap" />
       <TextBlock x:Name="WindowsIdentityText" Classes="field-label" TextWrapping="Wrap" Margin="0,4,0,0" />
     </StackPanel>
 
     <TabControl Grid.Row="1" Margin="0,22,0,18">
       <TabItem Header="Connection">
         <ScrollViewer Margin="12">
-          <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="14">
-            <TextBlock Grid.Row="0" Text="NAS host or IP" VerticalAlignment="Center" />
-            <TextBox Grid.Row="0" Grid.Column="1" x:Name="HostBox" Watermark="nas.example.local or 192.168.1.8" />
-            <TextBlock Grid.Row="1" Text="Port" VerticalAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="1" x:Name="PortBox" />
-            <TextBlock Grid.Row="2" Text="Username" VerticalAlignment="Center" />
-            <TextBox Grid.Row="2" Grid.Column="1" x:Name="UsernameBox" />
-            <TextBlock Grid.Row="3" Text="Password" VerticalAlignment="Center" />
-            <TextBox Grid.Row="3" Grid.Column="1" x:Name="PasswordBox" PasswordChar="•" />
-            <TextBlock Grid.Row="4" Text="Connection" VerticalAlignment="Top" />
-            <StackPanel Grid.Row="4" Grid.Column="1" Spacing="8">
-              <CheckBox x:Name="SslBox" Content="Use HTTPS" />
-              <CheckBox x:Name="VerifyCertificateBox" Content="Verify the HTTPS certificate" />
-            </StackPanel>
-            <Border Grid.Row="5" Grid.ColumnSpan="2" Classes="settings-note">
-              <TextBlock Text="QSurfer searches with this NAS account. Opening and browsing files uses the signed-in Windows user's usual network permissions." TextWrapping="Wrap" />
+          <StackPanel Spacing="14">
+            <CheckBox x:Name="EnableQsirchBox" Content="Use Qsirch" Checked="QsirchEnabledChanged" Unchecked="QsirchEnabledChanged" Classes="panel-title" />
+            <Grid x:Name="QsirchSettingsPanel" ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="14" Margin="14,0,0,0">
+              <TextBlock Grid.Row="0" Text="NAS host or IP" VerticalAlignment="Center" />
+              <TextBox Grid.Row="0" Grid.Column="1" x:Name="HostBox" Watermark="nas.example.local or 192.168.1.8" ToolTip.Tip="The NAS address QSurfer uses for Qsirch search requests." />
+              <TextBlock Grid.Row="1" Text="Port" VerticalAlignment="Center" />
+              <TextBox Grid.Row="1" Grid.Column="1" x:Name="PortBox" ToolTip.Tip="The NAS Qsirch port, usually 443 with HTTPS." />
+              <TextBlock Grid.Row="2" Text="Username" VerticalAlignment="Center" />
+              <TextBox Grid.Row="2" Grid.Column="1" x:Name="UsernameBox" ToolTip.Tip="Account QSurfer uses for Qsirch search requests. It does not change file permissions." />
+              <TextBlock Grid.Row="3" Text="Password" VerticalAlignment="Center" />
+              <TextBox Grid.Row="3" Grid.Column="1" x:Name="PasswordBox" PasswordChar="•" ToolTip.Tip="Leave blank to keep the saved credential. Enter a value only to replace it." />
+              <StackPanel Grid.Row="4" Grid.Column="1" Spacing="8">
+                <CheckBox x:Name="SslBox" Content="Use HTTPS" />
+                <CheckBox x:Name="VerifyCertificateBox" Content="Verify the HTTPS certificate" />
+              </StackPanel>
+            </Grid>
+            <CheckBox x:Name="SaveSharedConnectionDefaultsBox"
+                      Margin="14,0,0,0"
+                      Content="Global: store this NAS connection as a deployment default"
+                      ToolTip.Tip="Global connection defaults include the host, port, security options, username, and encrypted password together." />
+
+            <Border Height="1" Background="{DynamicResource QSurfer.SurfaceBorder}" Margin="0,4" />
+            <CheckBox x:Name="EnableSearchServiceBox" Content="Use QIndexer" Checked="SearchServiceEnabledChanged" Unchecked="SearchServiceEnabledChanged" />
+            <Grid x:Name="SearchServiceSettingsPanel" ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="14" Margin="14,0,0,0">
+              <TextBlock Grid.Row="0" Text="Service host or IP" VerticalAlignment="Center" />
+              <TextBox Grid.Row="0" Grid.Column="1" x:Name="SearchServiceHostBox" Watermark="search.example.local or 192.168.1.8" ToolTip.Tip="The QIndexer endpoint to query alongside Qsirch." />
+              <TextBlock Grid.Row="1" Text="Port" VerticalAlignment="Center" />
+              <TextBox Grid.Row="1" Grid.Column="1" x:Name="SearchServicePortBox" ToolTip.Tip="The service port supplied by the service administrator." />
+              <TextBlock Grid.Row="2" Text="Search token" VerticalAlignment="Center" />
+              <TextBox Grid.Row="2" Grid.Column="1" x:Name="SearchServiceTokenBox" PasswordChar="•" ToolTip.Tip="Bearer token sent only to QSurfer Search Service. Leave blank to keep the saved token." />
+              <StackPanel Grid.Row="3" Grid.Column="1" Spacing="8">
+                <CheckBox x:Name="SearchServiceSslBox" Content="Use HTTPS" />
+                <CheckBox x:Name="SearchServiceVerifyCertificateBox" Content="Verify the HTTPS certificate" />
+              </StackPanel>
+            </Grid>
+            <CheckBox x:Name="SaveSharedSearchServiceDefaultsBox"
+                      Margin="14,0,0,0"
+                      Content="Global: store this search-service connection as a deployment default" />
+            <TextBlock x:Name="SharedDeploymentLockedText"
+                       Text="Global deployment settings require an elevated session. Everyone can save a private workstation override."
+                       Opacity="0.68"
+                       TextWrapping="Wrap" />
+            <Border Classes="settings-note">
+              <TextBlock Text="Qsirch and QIndexer are independent. When both are configured, QSurfer asks both and combines their results. Opening and browsing files still use the signed-in user's usual network permissions." TextWrapping="Wrap" />
             </Border>
-          </Grid>
+          </StackPanel>
         </ScrollViewer>
       </TabItem>
 
       <TabItem Header="Behavior">
         <ScrollViewer Margin="12">
-          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="28">
-            <CheckBox Grid.Row="0" x:Name="ShowInTaskbarBox" Content="Show QSurfer in the taskbar" />
-            <CheckBox Grid.Row="0" Grid.Column="1" x:Name="MinimizeToTrayBox" Content="Minimize to the notification area" />
-            <CheckBox Grid.Row="1" x:Name="ExitToTrayBox" Content="Keep QSurfer in the notification area when closing" />
-            <CheckBox Grid.Row="1" Grid.Column="1" x:Name="ClearResultsWithQueryBox" Content="Clear results when the search text is cleared" />
-            <CheckBox Grid.Row="2" x:Name="AlwaysOnTopBox" Content="Always on top" />
-            <CheckBox Grid.Row="2" Grid.Column="1" x:Name="DefaultSearchContentsBox" Content="Search file contents by default" />
-            <CheckBox Grid.Row="3" x:Name="HighlightMatchesBox" Content="Highlight matching text" />
-            <CheckBox Grid.Row="3" Grid.Column="1" x:Name="PreviewPaneBox" Content="Show preview pane by default" />
-            <CheckBox Grid.Row="4" x:Name="UseThumbnailsBox" Content="Use Qsirch thumbnails when available" />
-            <CheckBox Grid.Row="4" Grid.Column="1" x:Name="ShowRecoverySystemFoldersBox" Content="Show raw QNAP recovery system folders" ToolTip.Tip="Shows @Recently-Snapshot and @Recycle in regular search and folder views" />
+          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="28">
+            <CheckBox Grid.Row="0" x:Name="ShowInTaskbarBox" Content="Show QSurfer in the taskbar" ToolTip.Tip="Show a normal QSurfer button in the operating system taskbar." />
+            <CheckBox Grid.Row="0" Grid.Column="1" x:Name="MinimizeToTrayBox" Content="Minimize to the notification area" ToolTip.Tip="Minimize to the small system tray area instead of the taskbar." />
+            <CheckBox Grid.Row="1" x:Name="ExitToTrayBox" Content="Keep QSurfer in the notification area when closing" ToolTip.Tip="Closing the window keeps QSurfer running in the system tray. Turn off when Close should fully exit." />
+            <CheckBox Grid.Row="1" Grid.Column="1" x:Name="ClearResultsWithQueryBox" Content="Clear results when the search text is cleared" ToolTip.Tip="When you erase a tab's search words, also remove its displayed results." />
+            <CheckBox Grid.Row="2" x:Name="AlwaysOnTopBox" Content="Always on top" ToolTip.Tip="Keep QSurfer above other normal windows." />
+            <CheckBox Grid.Row="2" Grid.Column="1" x:Name="DefaultSearchContentsBox" Content="Search file contents by default" ToolTip.Tip="Start new searches with document-text searching enabled. Leave off for faster name searching." />
+            <CheckBox Grid.Row="3" x:Name="HighlightMatchesBox" Content="Highlight matching text" ToolTip.Tip="Color the parts of names and paths that match your search words." />
+            <CheckBox Grid.Row="3" Grid.Column="1" x:Name="PreviewPaneBox" Content="Show preview pane by default" ToolTip.Tip="Open the right-side file preview automatically in new windows." />
+            <CheckBox Grid.Row="4" x:Name="UseThumbnailsBox" Content="Use NAS thumbnails when available" ToolTip.Tip="Ask the NAS for picture and document thumbnails when it can provide them." />
+            <CheckBox Grid.Row="4" Grid.Column="1" x:Name="ShowRecoverySystemFoldersBox" Content="Show raw NAS recovery system folders" ToolTip.Tip="Shows @Recently-Snapshot and @Recycle in regular search and folder views" />
             <CheckBox Grid.Row="5" x:Name="ShowQSurferSafetyCopiesBox" Content="Show QSurfer safety copies" ToolTip.Tip="Shows hidden .qsurfer and @qsurfer backup copies" />
             <CheckBox Grid.Row="5" Grid.Column="1" x:Name="ShowHiddenTemporaryFilesBox" Content="Show hidden and temporary files" ToolTip.Tip="Shows files beginning with ~ or ~$" />
             <CheckBox Grid.Row="6" x:Name="FlattenRecycleBinBox" Content="Flatten Recycle Bin" ToolTip.Tip="Shows deleted files from all Recycle Bin folders together, newest first" />
-            <TextBlock Grid.Row="7" Text="Search result limit" VerticalAlignment="Center" />
-            <TextBox Grid.Row="7" Grid.Column="1" x:Name="ResultLimitBox" Watermark="500" />
-            <TextBlock Grid.Row="8" Text="Default view" VerticalAlignment="Center" />
-            <ComboBox Grid.Row="8" Grid.Column="1" x:Name="ResultViewBox">
+            <CheckBox Grid.Row="6" Grid.Column="1" x:Name="ShowLocalNavigationFoldersBox" Content="Show local folders in Navigation" ToolTip.Tip="Shows Desktop, Documents, Downloads, Music, Pictures, and Videos in Navigation and Home" />
+            <CheckBox Grid.Row="7" x:Name="ShowLocalNavigationDrivesBox" Content="Show local drives in Navigation" ToolTip.Tip="Shows local and removable drives in Navigation and Home. Mapped network shares remain visible." />
+            <CheckBox Grid.Row="7" Grid.Column="1" x:Name="ConfirmScopeReplacementBox" Content="Confirm before replacing multiple search folders" ToolTip.Tip="Ask before selecting a folder from the address bar replaces more than one search-folder selection." />
+            <TextBlock Grid.Row="8" Text="Search result limit" VerticalAlignment="Center" />
+            <TextBox Grid.Row="8" Grid.Column="1" x:Name="ResultLimitBox" Watermark="1000" ToolTip.Tip="How many results QSurfer initially displays before Load more is needed. Larger numbers can take longer to paint." />
+            <TextBlock Grid.Row="9" Text="Default view" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="9" Grid.Column="1" x:Name="ResultViewBox" ToolTip.Tip="The starting display style for a new tab. You can still change View per tab." >
               <ComboBoxItem Content="Details" Tag="details" />
               <ComboBoxItem Content="List" Tag="list" />
               <ComboBoxItem Content="Small icons" Tag="small_icons" />
               <ComboBoxItem Content="Large icons" Tag="large_icons" />
             </ComboBox>
-            <TextBlock Grid.Row="9" Text="Default arrangement" VerticalAlignment="Center" />
-            <ComboBox Grid.Row="9" Grid.Column="1" x:Name="ResultSortBox">
+            <TextBlock Grid.Row="10" Text="Default arrangement" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="10" Grid.Column="1" x:Name="ResultSortBox" ToolTip.Tip="The starting order for a new tab. You can still change Arrange per tab." >
               <ComboBoxItem Content="Folder groups" Tag="folder" />
               <ComboBoxItem Content="Recentness" Tag="recent" />
               <ComboBoxItem Content="Name" Tag="name" />
@@ -74,24 +105,26 @@
               <ComboBoxItem Content="Type" Tag="type" />
               <ComboBoxItem Content="Size" Tag="size" />
             </ComboBox>
-            <TextBlock Grid.Row="10" Text="Search timeout (seconds)" VerticalAlignment="Center" />
-            <TextBox Grid.Row="10" Grid.Column="1" x:Name="SearchTimeoutBox" Watermark="90" />
-            <TextBlock Grid.Row="11" Text="Initial results" VerticalAlignment="Center" />
-            <TextBox Grid.Row="11" Grid.Column="1" x:Name="FirstPageSizeBox" Watermark="15" />
-            <TextBlock Grid.Row="12" Text="Additional results" VerticalAlignment="Center" />
-            <TextBox Grid.Row="12" Grid.Column="1" x:Name="NextPageSizeBox" Watermark="100" />
-            <TextBlock Grid.Row="13" Text="Restore original location" VerticalAlignment="Center" />
-            <ComboBox Grid.Row="13" Grid.Column="1" x:Name="OriginalRestorePolicyBox">
+            <TextBlock Grid.Row="11" Text="Search timeout (seconds)" VerticalAlignment="Center" />
+            <TextBox Grid.Row="11" Grid.Column="1" x:Name="SearchTimeoutBox" Watermark="90" ToolTip.Tip="How long QSurfer waits for one NAS search request before reporting a connection problem." />
+            <TextBlock Grid.Row="12" Text="Initial results" VerticalAlignment="Center" />
+            <TextBox Grid.Row="12" Grid.Column="1" x:Name="FirstPageSizeBox" Watermark="15" ToolTip.Tip="How many results QSurfer paints in its first batch. Smaller values make the first results appear sooner." />
+            <TextBlock Grid.Row="13" Text="Additional results" VerticalAlignment="Center" />
+            <TextBox Grid.Row="13" Grid.Column="1" x:Name="NextPageSizeBox" Watermark="100" ToolTip.Tip="How many results QSurfer paints in later batches. Larger values reduce updates during broad searches." />
+            <TextBlock Grid.Row="14" Text="Folders opened at once" VerticalAlignment="Center" />
+            <TextBox Grid.Row="14" Grid.Column="1" x:Name="BulkOpenLimitBox" Watermark="15" ToolTip.Tip="Limits the Open all in new QSurfer tabs action" />
+            <TextBlock Grid.Row="15" Text="Restore original location" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="15" Grid.Column="1" x:Name="OriginalRestorePolicyBox" ToolTip.Tip="Allow or block replacing a live file with a NAS snapshot. QSurfer always asks before replacing anything." >
               <ComboBoxItem Content="Disabled" Tag="disabled" />
               <ComboBoxItem Content="Files only" Tag="files" />
             </ComboBox>
-            <TextBlock Grid.Row="14" Text="Folder restore override" VerticalAlignment="Center" />
-            <ComboBox Grid.Row="14" Grid.Column="1" x:Name="OneTimeFolderRestoreBox" ToolTip.Tip="Allows only the next folder restore from Explorer">
+            <TextBlock Grid.Row="16" Text="Folder restore override" VerticalAlignment="Center" />
+            <ComboBox Grid.Row="16" Grid.Column="1" x:Name="OneTimeFolderRestoreBox" ToolTip.Tip="Allows only the next folder restore from Explorer">
               <ComboBoxItem Content="Blocked" Tag="blocked" />
               <ComboBoxItem Content="Allow one folder restore (this session)" Tag="one_time" />
             </ComboBox>
-            <TextBlock Grid.Row="15" Grid.ColumnSpan="2" Text="This replaces every file and folder beneath the selected folder with its snapshot copy. Type I understand below before arming it. The override clears after one successful folder restore or when QSurfer closes." Classes="field-label" TextWrapping="Wrap" />
-            <TextBox Grid.Row="16" Grid.ColumnSpan="2" x:Name="OneTimeFolderRestoreAcknowledgementBox" Watermark="Type I understand to arm the one-time folder restore" />
+            <TextBlock Grid.Row="17" Grid.ColumnSpan="2" Text="This replaces every file and folder beneath the selected folder with its snapshot copy. Type I understand below before arming it. The override clears after one successful folder restore or when QSurfer closes." Classes="field-label" TextWrapping="Wrap" />
+            <TextBox Grid.Row="18" Grid.ColumnSpan="2" x:Name="OneTimeFolderRestoreAcknowledgementBox" Watermark="Type I understand to arm the one-time folder restore" />
           </Grid>
         </ScrollViewer>
       </TabItem>
@@ -103,20 +136,20 @@
             <Grid ColumnDefinitions="Auto,220" ColumnSpacing="10">
               <TextBlock Text="Display mode" VerticalAlignment="Center" />
               <ComboBox Grid.Column="1" x:Name="ThemeBox">
-                <ComboBoxItem Content="Follow Windows" Tag="system" />
+                <ComboBoxItem Content="Follow system" Tag="system" />
                 <ComboBoxItem Content="Light" Tag="light" />
                 <ComboBoxItem Content="Dark" Tag="dark" />
               </ComboBox>
             </Grid>
             <StackPanel Spacing="4">
-              <CheckBox x:Name="UseWindowsAccentColorBox" Content="Use the current Windows accent color" Checked="UseWindowsAccentColorChanged" Unchecked="UseWindowsAccentColorChanged" />
+              <CheckBox x:Name="UseWindowsAccentColorBox" Content="Use the current system accent color" Checked="UseWindowsAccentColorChanged" Unchecked="UseWindowsAccentColorChanged" />
               <TextBlock Text="This changes buttons, links, and focus outlines. Your custom light and dark accents remain saved for when this option is off." Classes="field-label" TextWrapping="Wrap" />
             </StackPanel>
             <Grid ColumnDefinitions="Auto,220,Auto" ColumnSpacing="10">
               <TextBlock Text="Color preset" VerticalAlignment="Center" />
               <ComboBox Grid.Column="1" x:Name="ThemePresetBox" SelectionChanged="ThemePresetChanged">
                 <ComboBoxItem Content="Custom" Tag="custom" />
-                <ComboBoxItem Content="Windows" Tag="windows" />
+                <ComboBoxItem Content="Follow system" Tag="windows" />
                 <ComboBoxItem Content="Explorer light" Tag="explorer-light" />
                 <ComboBoxItem Content="Explorer dark" Tag="explorer-dark" />
                 <ComboBoxItem Content="High contrast" Tag="high-contrast" />
@@ -128,7 +161,7 @@
                 <StackPanel Spacing="8">
                   <TextBlock Text="Light preview" Classes="panel-title" />
                   <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock x:Name="LightPreviewFolderGlyph" Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
+                    <TextBlock x:Name="LightPreviewFolderGlyph" Text="&#x1F4C1;" FontSize="18" VerticalAlignment="Center" />
                     <Border x:Name="LightPreviewSelection" Padding="8,4"><TextBlock x:Name="LightPreviewSelectionText" Text="Selected result" /></Border>
                     <Border x:Name="LightPreviewHover" Padding="8,4"><TextBlock Text="Hovered item" /></Border>
                     <Border x:Name="LightPreviewMatch" Padding="8,4"><TextBlock Text="Match" /></Border>
@@ -139,7 +172,7 @@
                 <StackPanel Spacing="8">
                   <TextBlock Text="Dark preview" Classes="panel-title" />
                   <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock x:Name="DarkPreviewFolderGlyph" Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
+                    <TextBlock x:Name="DarkPreviewFolderGlyph" Text="&#x1F4C1;" FontSize="18" VerticalAlignment="Center" />
                     <Border x:Name="DarkPreviewSelection" Padding="8,4"><TextBlock x:Name="DarkPreviewSelectionText" Text="Selected result" /></Border>
                     <Border x:Name="DarkPreviewHover" Padding="8,4"><TextBlock Text="Hovered item" /></Border>
                     <Border x:Name="DarkPreviewMatch" Padding="8,4"><TextBlock Text="Match" /></Border>
@@ -238,27 +271,37 @@
             <Button Content="Remove selected" Click="RemoveMapping_Click" />
             <Button Content="Add mapping" Classes="primary" Click="AddMapping_Click" />
           </StackPanel>
-          <Grid RowDefinitions="Auto,Auto,160,Auto,*" RowSpacing="8">
-            <TextBlock Text="Detected Windows network drives are used automatically and are never saved as manual rules. Add a manual mapping only when Qsirch's share path needs a different Windows path." Classes="field-label" TextWrapping="Wrap" />
+          <Grid x:Name="PathMappingsLayout" RowDefinitions="Auto,Auto,160,Auto,*" RowSpacing="8">
+            <TextBlock x:Name="PathMappingsIntro" Text="Detected network shares are used automatically and are never saved as manual rules. Add a manual mapping only when a NAS share path needs a different local path." Classes="field-label" TextWrapping="Wrap" />
             <Grid Grid.Row="1" ColumnDefinitions="Auto,110,*,Auto,Auto" ColumnSpacing="8">
-              <TextBlock Text="Map network drive" Classes="panel-title" VerticalAlignment="Center" />
+              <TextBlock x:Name="MapNetworkDriveLabel" Text="Map network share" Classes="panel-title" VerticalAlignment="Center" />
               <TextBox Grid.Column="1" x:Name="MapDriveBox" Watermark="X:" MaxLength="2" />
               <TextBox Grid.Column="2" x:Name="MapNetworkPathBox" Watermark="\\server\share" />
               <CheckBox Grid.Column="3" x:Name="MapReconnectBox" Content="Reconnect at sign-in" IsChecked="True" VerticalAlignment="Center" />
-              <Button Grid.Column="4" Content="Map drive" Classes="primary" Click="MapNetworkDrive_Click" />
+              <Button Grid.Column="4" x:Name="MapNetworkDriveButton" Content="Map drive" Classes="primary" Click="MapNetworkDrive_Click" />
             </Grid>
-            <DataGrid Grid.Row="2" x:Name="DetectedMappingsGrid" ItemsSource="{Binding DetectedMappings}" AutoGenerateColumns="False" IsReadOnly="True">
+            <DataGrid Grid.Row="2" x:Name="DetectedMappingsGrid" ItemsSource="{Binding DetectedMappings}" AutoGenerateColumns="False" CanUserResizeColumns="True" IsReadOnly="True">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="Drive" Binding="{Binding DriveRoot}" Width="100" />
                 <DataGridTextColumn Header="Network location" Binding="{Binding NetworkPath}" Width="*" />
-                <DataGridTextColumn Header="Qsirch share" Binding="{Binding QsirchShareRoot}" Width="170" />
+                <DataGridTextColumn Header="NAS share" Binding="{Binding QsirchShareRoot}" Width="170" />
               </DataGrid.Columns>
             </DataGrid>
-            <TextBlock Grid.Row="3" Text="Manual Qsirch-to-Windows mappings" Classes="panel-title" />
-            <DataGrid Grid.Row="4" x:Name="MappingsGrid" ItemsSource="{Binding Mappings}" AutoGenerateColumns="False">
+            <TextBlock Grid.Row="3" Text="Manual NAS-to-local path mappings" Classes="panel-title" />
+            <DataGrid Grid.Row="4" x:Name="MappingsGrid" ItemsSource="{Binding Mappings}" AutoGenerateColumns="False" CanUserResizeColumns="True">
               <DataGrid.Columns>
-                <DataGridTextColumn Header="Qsirch share path" Binding="{Binding ShareRoot}" Width="*" />
-                <DataGridTextColumn Header="Windows path" Binding="{Binding MappedRoot}" Width="*" />
+                <DataGridTemplateColumn Header="Global" Width="92" MinWidth="92">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate>
+                      <CheckBox HorizontalAlignment="Center"
+                                IsChecked="{Binding IsGlobal, Mode=TwoWay}"
+                                IsEnabled="{Binding #SettingsRoot.CanEditGlobalSettings}"
+                                ToolTip.Tip="Save this mapping as a deployment default for new workstations." />
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="NAS share path" Binding="{Binding ShareRoot}" Width="*" />
+                <DataGridTextColumn Header="Local path" Binding="{Binding MappedRoot}" Width="*" />
               </DataGrid.Columns>
             </DataGrid>
           </Grid>
@@ -271,9 +314,9 @@
             <Grid ColumnDefinitions="*,*" ColumnSpacing="12" Margin="0,10,0,0">
               <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8">
                 <TextBlock Text="Folder exclusions" Classes="panel-title" />
-                    <DataGrid Grid.Row="1" x:Name="FolderRulesGrid" AutoGenerateColumns="False">
+                    <DataGrid Grid.Row="1" x:Name="FolderRulesGrid" AutoGenerateColumns="False" CanUserResizeColumns="True">
                       <DataGrid.Columns>
-                        <DataGridTemplateColumn Header="Global" Width="70">
+                        <DataGridTemplateColumn Header="Global" Width="92" MinWidth="92">
                           <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                               <CheckBox HorizontalAlignment="Center"
@@ -292,9 +335,9 @@
               </Grid>
               <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" RowSpacing="8">
                 <TextBlock Text="File exclusions" Classes="panel-title" />
-                    <DataGrid Grid.Row="1" x:Name="FileRulesGrid" AutoGenerateColumns="False">
+                    <DataGrid Grid.Row="1" x:Name="FileRulesGrid" AutoGenerateColumns="False" CanUserResizeColumns="True">
                       <DataGrid.Columns>
-                        <DataGridTemplateColumn Header="Global" Width="70">
+                        <DataGridTemplateColumn Header="Global" Width="92" MinWidth="92">
                           <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                               <CheckBox HorizontalAlignment="Center"
@@ -316,8 +359,8 @@
           <TabItem Header="Visibility">
             <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8" Margin="0,10,0,0">
               <StackPanel Spacing="4">
-                <TextBlock Text="Visibility only hides results in QSurfer. It does not change NAS or Windows permissions. Allow rules override matching deny rules." Classes="field-label" TextWrapping="Wrap" />
-                <TextBlock Text="Global rules can only be changed by a local Administrator or a domain Domain Admin." Classes="field-label" TextWrapping="Wrap" IsVisible="{Binding #SettingsRoot.GlobalRulesAreLocked}" />
+                <TextBlock Text="Visibility only hides results in QSurfer. It does not change NAS or file-system permissions. Allow rules override matching deny rules." Classes="field-label" TextWrapping="Wrap" />
+                <TextBlock Text="Global rules require an elevated session. Rules without the Global check stay private to this workstation." Classes="field-label" TextWrapping="Wrap" IsVisible="{Binding #SettingsRoot.GlobalRulesAreLocked}" />
                 <StackPanel Orientation="Horizontal" Spacing="14" Margin="0,4,0,0">
                   <TextBlock Text="New rules apply to:" Classes="field-label" VerticalAlignment="Center" />
                   <CheckBox x:Name="VisibilityThisMachineBox" Content="This machine" />
@@ -331,7 +374,7 @@
                         CanUserSortColumns="False"
                         MinColumnWidth="72">
                 <DataGrid.Columns>
-                  <DataGridTemplateColumn Header="Global" Width="0.8*" MinWidth="72">
+                  <DataGridTemplateColumn Header="Global" Width="92" MinWidth="92">
                     <DataGridTemplateColumn.CellTemplate>
                       <DataTemplate>
                         <CheckBox HorizontalAlignment="Center"
@@ -364,8 +407,8 @@
 
       <TabItem Header="History">
         <StackPanel Margin="12" Spacing="12" MaxWidth="520">
-          <CheckBox x:Name="HistoryEnabledBox" Content="Keep favorites and saved searches for this Windows user" />
-          <TextBlock Text="Saved data is stored in a local SQLite database. It stays personal to the current Windows user and does not make the portable package grow with every search." Classes="field-label" TextWrapping="Wrap" />
+          <CheckBox x:Name="HistoryEnabledBox" Content="Keep favorites and saved searches for this user" />
+          <TextBlock Text="Saved data is stored in a local SQLite database. It stays personal to the current user and does not make the portable package grow with every search." Classes="field-label" TextWrapping="Wrap" />
           <CheckBox x:Name="ClearHistoryBox" Content="Clear this user's saved results when saving" />
           <CheckBox x:Name="ClearStarredBox" Content="Also clear favorites" IsEnabled="{Binding #ClearHistoryBox.IsChecked}" />
           <Button Content="Reset this user's saved data" HorizontalAlignment="Left" Click="ResetDatabase_Click" />
@@ -397,6 +440,34 @@
                 <TextBlock Grid.Row="10" Text="Delete" VerticalAlignment="Center" /><TextBox Grid.Row="10" Grid.Column="1" x:Name="DeleteShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
                 <TextBlock Grid.Row="11" Text="New folder" VerticalAlignment="Center" /><TextBox Grid.Row="11" Grid.Column="1" x:Name="NewFolderShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
                 <TextBlock Grid.Row="12" Text="Add or remove Favorite" VerticalAlignment="Center" /><TextBox Grid.Row="12" Grid.Column="1" x:Name="FavoriteShortcutBox" IsReadOnly="True" KeyDown="ShortcutBoxKeyDown" KeyUp="ShortcutBoxKeyUp" />
+              </Grid>
+            </StackPanel>
+            <StackPanel Spacing="8">
+              <TextBlock Text="Navigation scope gestures" Classes="panel-title" />
+              <TextBlock Text="Choose modifier-click gestures for the navigation tree. Include keeps the existing folder selection behavior; exclude removes a branch from the active search without needing an included folder." Classes="field-label" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="170,*" RowDefinitions="Auto,Auto" RowSpacing="8" ColumnSpacing="12">
+                <TextBlock Text="Include folder" VerticalAlignment="Center" />
+                <ComboBox Grid.Column="1" x:Name="NavigationScopeIncludeGestureBox">
+                  <ComboBoxItem Tag="" Content="Disabled" />
+                  <ComboBoxItem Tag="Shift" Content="Shift+Click" />
+                  <ComboBoxItem Tag="Ctrl" Content="Ctrl+Click" />
+                  <ComboBoxItem Tag="Alt" Content="Alt+Click" />
+                  <ComboBoxItem Tag="Ctrl+Shift" Content="Ctrl+Shift+Click" />
+                  <ComboBoxItem Tag="Shift+Alt" Content="Shift+Alt+Click" />
+                  <ComboBoxItem Tag="Ctrl+Alt" Content="Ctrl+Alt+Click" />
+                  <ComboBoxItem Tag="Ctrl+Shift+Alt" Content="Ctrl+Shift+Alt+Click" />
+                </ComboBox>
+                <TextBlock Grid.Row="1" Text="Exclude folder" VerticalAlignment="Center" />
+                <ComboBox Grid.Row="1" Grid.Column="1" x:Name="NavigationScopeExcludeGestureBox">
+                  <ComboBoxItem Tag="" Content="Disabled" />
+                  <ComboBoxItem Tag="Shift" Content="Shift+Click" />
+                  <ComboBoxItem Tag="Ctrl" Content="Ctrl+Click" />
+                  <ComboBoxItem Tag="Alt" Content="Alt+Click" />
+                  <ComboBoxItem Tag="Ctrl+Shift" Content="Ctrl+Shift+Click" />
+                  <ComboBoxItem Tag="Shift+Alt" Content="Shift+Alt+Click" />
+                  <ComboBoxItem Tag="Ctrl+Alt" Content="Ctrl+Alt+Click" />
+                  <ComboBoxItem Tag="Ctrl+Shift+Alt" Content="Ctrl+Shift+Alt+Click" />
+                </ComboBox>
               </Grid>
             </StackPanel>
           </StackPanel>

@@ -10,6 +10,9 @@ namespace QSurfer.Avalonia.ViewModels;
 public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
 {
     private static readonly DateTime EarliestSearchDate = new(1970, 1, 1);
+    private static readonly Regex TrailingScopeClause = new(
+        @"(?:^|\s)in:(?:\""[^\""\r\n]+\""|[^\r\n]+)\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     private readonly Func<SearchTabViewModel, Task> _search;
     private readonly Func<SearchTabViewModel, Task> _loadMore;
     private readonly Func<SearchTabViewModel, Task> _stop;
@@ -20,8 +23,12 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     private readonly Func<SearchTabViewModel, Task> _saveSearch;
     private readonly List<SearchResult> _allResults = [];
     private readonly List<SortRule> _sortRules = [];
+    private readonly List<string> _scopePaths = [];
+    private readonly List<string> _excludedScopePaths = [];
+    private bool _isScopeAppendPending;
     private string _searchTitle;
     private string _browseTitle = "";
+    private string _browseLocation = "";
     private bool _isBrowsing;
     private string _query = "";
     private string _status = "Ready";
@@ -29,7 +36,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     private bool _exactMatch;
     private bool _searchContents;
     private bool _isPinned;
-    private string _workspaceGlyph = "\uE721";
+    private string _workspaceGlyph = "\U0001F50D";
     private bool _isTypeFilterOpen;
     private FileTypeFilter _selectedFileType;
     private ResultViewMode _selectedViewMode;
@@ -40,6 +47,8 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     private DateRangePreset _selectedDatePreset;
     private bool _applyingDatePreset;
     private SearchResult? _selectedResult;
+    private long? _savedSearchId;
+    private string _savedSearchName = "";
 
     public SearchTabViewModel(
         int number,
@@ -118,7 +127,12 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         _selectedDatePreset = DatePresets[0];
         _dateTo = Today;
         Results.CollectionChanged += ResultsChanged;
-        SearchCommand = new AsyncCommand(() => _search(this), () => !IsSearching && !string.IsNullOrWhiteSpace(Query));
+        // A replacement search is safe: the owning window cancels the current token
+        // and advances SearchVersion before starting the next request.
+        SearchCommand = new AsyncCommand(
+            () => _search(this),
+            () => !string.IsNullOrWhiteSpace(Query),
+            allowsReplacementWhileExecuting: true);
         LoadMoreCommand = new AsyncCommand(() => _loadMore(this), () => !IsSearching && CanLoadMore);
         StopCommand = new AsyncCommand(() => _stop(this), () => IsSearching);
         ClearCommand = new AsyncCommand(() => _clear(this), () => !IsSearching && (_allResults.Count > 0 || !string.IsNullOrWhiteSpace(Query)));
@@ -153,7 +167,330 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     public int SearchVersion { get; set; }
     public int NextOffset { get; set; }
     public bool CanLoadMore { get; set; }
-    public string ScopePath { get; private set; } = "";
+    public string ScopePath => _scopePaths.FirstOrDefault() ?? "";
+    public IReadOnlyList<string> ScopePaths => _scopePaths;
+    public IReadOnlyList<string> ExcludedScopePaths => _excludedScopePaths;
+    public bool IsScopeAppendPending
+    {
+        get => _isScopeAppendPending;
+        private set
+        {
+            if (SetField(ref _isScopeAppendPending, value))
+            {
+                RefreshScopeDisplayEntries();
+            }
+        }
+    }
+    public ObservableCollection<ScopeDisplayEntry> ScopeDisplayEntries { get; } = [];
+    public string ScopeSummary
+    {
+        get
+        {
+            var included = string.Join(Environment.NewLine, _scopePaths.Select(CompactScopeDisplayPath));
+            return _excludedScopePaths.Count == 0
+                ? included
+                : $"{included}{Environment.NewLine}Excluding:{Environment.NewLine}{string.Join(Environment.NewLine, _excludedScopePaths.Select(CompactScopeDisplayPath))}";
+        }
+    }
+    public bool HasFolderScope => SelectedScope.Key == "folder" && (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0);
+    public long? SavedSearchId => _savedSearchId;
+    public string SavedSearchName => _savedSearchName;
+    public bool HasSavedSearchSource => _savedSearchId.HasValue;
+
+    public void SetSavedSearchSource(long id, string name)
+    {
+        _savedSearchId = id;
+        _savedSearchName = name?.Trim() ?? "";
+        OnPropertyChanged(nameof(SavedSearchId));
+        OnPropertyChanged(nameof(SavedSearchName));
+        OnPropertyChanged(nameof(HasSavedSearchSource));
+    }
+
+    public void SetScopeFolder(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        // A normal folder selection replaces the entire scope definition.
+        // Explicit exclusions are retained only for multi-folder scope editing.
+        _excludedScopePaths.Clear();
+        SetScopeFolders([path]);
+    }
+
+    public void BeginScopeAppend()
+    {
+        if (_scopePaths.Count > 0)
+        {
+            IsScopeAppendPending = true;
+        }
+    }
+
+    public bool ApplyAddressScope(string path)
+    {
+        if (ContainsIncludedScope(path))
+        {
+            IsScopeAppendPending = false;
+            return false;
+        }
+
+        if (!IsScopeAppendPending)
+        {
+            SetScopeFolder(path);
+            return true;
+        }
+
+        IsScopeAppendPending = false;
+        return AddScopeFolder(path);
+    }
+
+    public bool ContainsIncludedScope(string path)
+    {
+        var normalized = NormalizeScopePath(path);
+        return !string.IsNullOrWhiteSpace(normalized) &&
+               _scopePaths.Any(scope => scope.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public bool AddScopeFolder(string path)
+    {
+        var normalized = NormalizeScopePath(path);
+        if (string.IsNullOrWhiteSpace(normalized) ||
+            _scopePaths.Any(scope => scope.Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        _scopePaths.Add(normalized);
+        SelectedScope = SearchScopes[1];
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters(forceRepaint: true);
+        return true;
+    }
+
+    public void SetScopeFolders(IEnumerable<string> paths)
+    {
+        var normalized = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizeScopePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _scopePaths.Clear();
+        _scopePaths.AddRange(normalized);
+        IsScopeAppendPending = false;
+        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters(forceRepaint: true);
+    }
+
+    public void RestoreScope(
+        string scopeKey,
+        string? scopePath,
+        IReadOnlyList<string>? scopePaths = null,
+        IReadOnlyList<string>? excludedScopePaths = null)
+    {
+        _scopePaths.Clear();
+        _scopePaths.AddRange((scopePaths ?? [scopePath ?? ""])
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizeScopePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+        _excludedScopePaths.Clear();
+        _excludedScopePaths.AddRange((excludedScopePaths ?? [])
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizeScopePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+        IsScopeAppendPending = false;
+        SelectedScope = (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0) && scopeKey.Equals("folder", StringComparison.OrdinalIgnoreCase)
+            ? SearchScopes[1]
+            : SearchScopes.First(scope => scope.Key.Equals(scopeKey, StringComparison.OrdinalIgnoreCase));
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters(forceRepaint: true);
+    }
+
+    public void ToggleScopeFolder(string path)
+    {
+        var normalized = NormalizeScopePath(path);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        var directScope = _scopePaths.FindIndex(scope => scope.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        if (directScope >= 0)
+        {
+            _scopePaths.RemoveAt(directScope);
+            _excludedScopePaths.RemoveAll(excluded => IsPathWithinScope(excluded, normalized));
+        }
+        else if (IsWithinAnyScope(normalized, _scopePaths))
+        {
+            var excludedScope = _excludedScopePaths.FindIndex(scope => scope.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            if (excludedScope >= 0)
+            {
+                _excludedScopePaths.RemoveAt(excludedScope);
+            }
+            else
+            {
+                _excludedScopePaths.RemoveAll(excluded => IsPathWithinScope(excluded, normalized));
+                _excludedScopePaths.Add(normalized);
+            }
+        }
+        else
+        {
+            _scopePaths.Add(normalized);
+        }
+
+        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters();
+    }
+
+    public void ToggleExcludedScopeFolder(string path)
+    {
+        var normalized = NormalizeScopePath(path);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        var directExclusion = _excludedScopePaths.FindIndex(scope => scope.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        if (directExclusion >= 0)
+        {
+            _excludedScopePaths.RemoveAt(directExclusion);
+        }
+        else
+        {
+            _excludedScopePaths.RemoveAll(excluded => IsPathWithinScope(excluded, normalized));
+            _excludedScopePaths.Add(normalized);
+        }
+
+        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters();
+    }
+
+    public void RemoveScopeEntry(ScopeDisplayEntry entry)
+    {
+        var normalized = NormalizeScopePath(entry.Path);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        if (entry.IsExcluded)
+        {
+            _excludedScopePaths.RemoveAll(path => path.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            _scopePaths.RemoveAll(path => path.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            _excludedScopePaths.RemoveAll(path => IsPathWithinScope(path, normalized));
+        }
+
+        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters();
+    }
+
+    public void SetScopeEntryIncluded(ScopeDisplayEntry entry, bool included)
+    {
+        if (entry.IsPending)
+        {
+            return;
+        }
+
+        var normalized = NormalizeScopePath(entry.Path);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        var isIncluded = _scopePaths.Any(path => path.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        if (isIncluded == included)
+        {
+            return;
+        }
+
+        if (included)
+        {
+            _excludedScopePaths.RemoveAll(path => path.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            _scopePaths.Add(normalized);
+        }
+        else
+        {
+            _scopePaths.RemoveAll(path => path.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            _excludedScopePaths.RemoveAll(path => path.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+            _excludedScopePaths.Add(normalized);
+        }
+
+        SelectedScope = SearchScopes[1];
+        OnPropertyChanged(nameof(ScopePath));
+        OnPropertyChanged(nameof(ScopePaths));
+        OnPropertyChanged(nameof(ExcludedScopePaths));
+        RefreshScopeDisplayEntries();
+        OnPropertyChanged(nameof(ScopeSummary));
+        OnPropertyChanged(nameof(HasFolderScope));
+        ApplyFilters(forceRepaint: true);
+    }
+
+    private void RefreshScopeDisplayEntries()
+    {
+        var entries = _scopePaths
+            .Select(path => new ScopeDisplayEntry(path, CompactScopeDisplayPath(path), false, CountResultsWithinScope(path)))
+            .Concat(_excludedScopePaths.Select(path => new ScopeDisplayEntry(path, $"Excluded: {CompactScopeDisplayPath(path)}", true, CountResultsWithinScope(path))))
+            // A shared path's lexical order also puts its parent before its children.
+            .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (IsScopeAppendPending)
+        {
+            entries.Add(ScopeDisplayEntry.Pending);
+        }
+
+        ScopeDisplayEntries.Clear();
+        foreach (var entry in entries)
+        {
+            ScopeDisplayEntries.Add(entry);
+        }
+    }
+
+    public void ClearScopeFolder()
+    {
+        IsScopeAppendPending = false;
+        _excludedScopePaths.Clear();
+        SetScopeFolders([]);
+    }
     public string SortSpecification => string.Join(',', _sortRules.Select(rule => $"{rule.Key}:{(rule.Descending ? "desc" : "asc")}"));
     public string PrimarySortKey => _sortRules.FirstOrDefault()?.Key ?? _selectedSortMode.Key;
 
@@ -169,6 +506,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public bool IsBrowsing => _isBrowsing;
+    public string BrowseLocation => _browseLocation;
 
     public void SetWorkspaceMode(bool browsing)
     {
@@ -179,12 +517,13 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(Title));
         }
 
-        WorkspaceGlyph = browsing ? "\uE838" : "\uE721";
+        WorkspaceGlyph = browsing ? "\U0001F4C2" : "\U0001F50D";
     }
 
     public void SetBrowseLocation(string path)
     {
         var trimmed = (path ?? "").Trim().TrimEnd('\\', '/');
+        _browseLocation = path ?? "";
         _browseTitle = string.IsNullOrWhiteSpace(trimmed) ? "Browse" : CompactBrowseTitle(trimmed);
         if (_isBrowsing)
         {
@@ -324,6 +663,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             if (SetField(ref _selectedScope, value))
             {
                 ApplyFilters();
+                OnPropertyChanged(nameof(HasFolderScope));
             }
         }
     }
@@ -372,10 +712,6 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             if (!SetField(ref _selectedResult, value))
             {
                 return;
-            }
-            if (value?.IsFolder == true)
-            {
-                ScopePath = value.Path;
             }
             OpenCommand.RaiseCanExecuteChanged();
             BrowseCommand.RaiseCanExecuteChanged();
@@ -446,11 +782,15 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         NextOffset = 0;
         CanLoadMore = false;
         LoadMoreCommand.RaiseCanExecuteChanged();
+        RefreshScopeDisplayEntries();
     }
 
+
     public bool ContainsResult(SearchResult candidate) => _allResults.Any(existing =>
-        string.Equals(existing.Path, candidate.Path, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(existing.FileName, candidate.FileName, StringComparison.OrdinalIgnoreCase));
+        string.Equals(existing.FileName, candidate.FileName, StringComparison.OrdinalIgnoreCase) &&
+        ResultPathCandidates(existing).Any(existingPath =>
+            ResultPathCandidates(candidate).Any(candidatePath =>
+                NormalizeNasPath(existingPath).Equals(NormalizeNasPath(candidatePath), StringComparison.OrdinalIgnoreCase))));
 
     public void AddResults(IEnumerable<SearchResult> source)
     {
@@ -467,6 +807,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         if (changed)
         {
             ApplyFilters();
+            RefreshScopeDisplayEntries();
         }
     }
 
@@ -561,7 +902,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         ExactMatch = false;
         SearchContents = false;
         SelectedDatePreset = DatePresets[0];
-        SelectedScope = SearchScopes[0];
+        RestoreScope("all", "");
         foreach (var option in TypeFilterOptions)
         {
             option.IsSelected = false;
@@ -585,6 +926,10 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         if (_allResults.Count == 0 && Results.Count == 0)
         {
             OnPropertyChanged(nameof(TypeFilterSummary));
+            if (HasFolderScope)
+            {
+                RefreshScopeDisplayEntries();
+            }
             return;
         }
 
@@ -605,6 +950,10 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             SynchronizeVisibleResults(ordered);
         }
         OnPropertyChanged(nameof(TypeFilterSummary));
+        if (HasFolderScope)
+        {
+            RefreshScopeDisplayEntries();
+        }
     }
 
     private void SynchronizeVisibleResults(IReadOnlyList<SearchResult> ordered)
@@ -653,21 +1002,110 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         {
             return false;
         }
-        if (SelectedScope.Key == "folder" && !string.IsNullOrWhiteSpace(ScopePath) &&
-            !result.Path.StartsWith(ScopePath.TrimEnd('\\', '/') + "\\", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(result.Path.TrimEnd('\\', '/'), ScopePath.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+        if (HasFolderScope && !MatchesFolderScope(result))
         {
             return false;
         }
-        if (ExactMatch && !SearchContents && !string.IsNullOrWhiteSpace(Query))
+        var queryTerm = TrailingScopeClause.Replace(Query, "").Trim();
+        if (ExactMatch && !SearchContents && !string.IsNullOrWhiteSpace(queryTerm))
         {
-            var pattern = $"(?<![A-Za-z0-9]){Regex.Escape(Query.Trim())}(?![A-Za-z0-9])";
+            var pattern = $"(?<![A-Za-z0-9]){Regex.Escape(queryTerm)}(?![A-Za-z0-9])";
             if (!Regex.IsMatch(result.FileName, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             {
                 return false;
             }
         }
         return true;
+    }
+
+    private static bool IsWithinAnyScope(string path, IEnumerable<string> scopes) =>
+        scopes.Any(scope => IsPathWithinScope(path, scope));
+
+    private static bool IsResultWithinAnyScope(SearchResult result, IEnumerable<string> scopes)
+    {
+        // NAS search, browser results, and saved results can carry the same location
+        // in different forms. Scope matching must accept their canonical NAS path as
+        // well as the mapped/locally resolved form without making UI state depend on
+        // which source supplied the result.
+        return ResultPathCandidates(result)
+            .Any(path => IsWithinAnyScope(path, scopes));
+    }
+
+    // A more specific explicit selection wins. This lets an included child remain
+    // searchable after its parent is turned off in the search-folder list.
+    private bool MatchesFolderScope(SearchResult result) =>
+        ResultPathCandidates(result).Any(MatchesFolderScopePath);
+
+    private bool MatchesFolderScopePath(string path)
+    {
+        var mostSpecificLength = -1;
+        bool? decision = null;
+
+        foreach (var (scope, included) in _scopePaths.Select(scope => (scope, true))
+                     .Concat(_excludedScopePaths.Select(scope => (scope, false))))
+        {
+            if (!IsPathWithinScope(path, scope))
+            {
+                continue;
+            }
+
+            var length = NormalizeScopePath(scope).Length;
+            // An exclusion breaks a tie, keeping a deliberately disabled exact
+            // folder disabled unless a deeper child was explicitly included.
+            if (length > mostSpecificLength || (length == mostSpecificLength && !included))
+            {
+                mostSpecificLength = length;
+                decision = included;
+            }
+        }
+
+        return decision ?? _scopePaths.Count == 0;
+    }
+
+    private int CountResultsWithinScope(string scopePath) =>
+        _allResults.Count(result =>
+            IsResultWithinAnyScope(result, [scopePath]) &&
+            MatchesFilters(result));
+
+    private static IEnumerable<string> ResultPathCandidates(SearchResult result)
+    {
+        foreach (var path in new[] { result.Path, result.ResolvedPath, result.WindowsPath })
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static bool IsPathWithinScope(string path, string scopePath)
+    {
+        var result = NormalizeNasPath(path);
+        var scope = NormalizeNasPath(scopePath);
+        return string.Equals(result, scope, StringComparison.OrdinalIgnoreCase) ||
+               result.StartsWith(scope + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeNasPath(string path) =>
+        (path ?? "")
+            .Replace('/', '\\')
+            .Trim()
+            .TrimEnd('*')
+            .Trim('\\');
+
+    private static string NormalizeScopePath(string path) =>
+        NormalizeNasPath(path).TrimEnd('\\');
+
+    private static string CompactScopeDisplayPath(string path)
+    {
+        var normalized = NormalizeScopePath(path);
+        if (normalized.Length == 2 && char.IsLetter(normalized[0]) && normalized[1] == ':')
+        {
+            return normalized + "\\";
+        }
+        return normalized.StartsWith("Shared\\", StringComparison.OrdinalIgnoreCase)
+            ? normalized["Shared\\".Length..]
+            : normalized;
     }
 
     private DateTime? NormalizeDate(DateTime? value)
@@ -684,6 +1122,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
 
         return date.Date > Today.Date ? Today : date.Date;
     }
+
 
     private static bool MatchesType(SearchResult result, FileTypeFilter filter) =>
         result.IsFolder
@@ -721,7 +1160,11 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         {
             ordered = ApplySortRule(ordered, rules[index]);
         }
-        return ordered.ThenBy(result => result.FileName, StringComparer.CurrentCultureIgnoreCase);
+        // Providers do not necessarily order equal names or timestamps alike. Keep
+        // the final order local and stable so batches cannot reshuffle the view.
+        return ordered
+            .ThenBy(result => result.FileName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(StableResultPath, StringComparer.OrdinalIgnoreCase);
     }
 
     private static IOrderedEnumerable<SearchResult> OrderBySortRule(IEnumerable<SearchResult> source, SortRule rule) =>
@@ -766,6 +1209,11 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
 
     private static bool DefaultSortDescending(string key) => key is "modified" or "recent" or "size";
 
+    private static string StableResultPath(SearchResult result) =>
+        NormalizeNasPath(string.IsNullOrWhiteSpace(result.Path)
+            ? result.ResolvedPath ?? result.WindowsPath ?? ""
+            : result.Path);
+
     private static string CompactBrowseTitle(string path)
     {
         var parts = path.Trim('\\', '/').Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
@@ -779,6 +1227,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         if (e.PropertyName == nameof(FileTypeFilterOption.IsSelected))
         {
             ApplyFilters();
+            OnPropertyChanged(nameof(TypeFilterOptions));
         }
     }
 
@@ -804,4 +1253,12 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
+}
+
+public sealed record ScopeDisplayEntry(string Path, string Text, bool IsExcluded, int ResultCount = 0, bool IsPending = false)
+{
+    public static ScopeDisplayEntry Pending { get; } = new("", "Type a new path to add to this query", false, 0, true);
+    public bool IsIncluded => !IsExcluded && !IsPending;
+    public bool CanRemove => !IsPending;
+    public string ResultCountText => ResultCount == 1 ? "1 result" : $"{ResultCount:N0} results";
 }

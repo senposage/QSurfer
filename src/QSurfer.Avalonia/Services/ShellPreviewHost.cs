@@ -57,6 +57,11 @@ public sealed class ShellPreviewHost : NativeControlHost, IDisposable
     // away from the UI thread while a search is painting results.
     public static Guid? TryResolveHandlerClassId(string path)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
         if (!File.Exists(path))
         {
             return null;

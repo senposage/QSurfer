@@ -1,11 +1,10 @@
 using System.Threading;
+using QSurfer.Core.Services;
 
 namespace QSurfer.Avalonia.Services;
 
 internal sealed class SingleInstanceService : IDisposable
 {
-    private const string MutexName = @"Global\QSurfer.SingleInstance";
-    private const string ActivationEventName = @"Global\QSurfer.ActivateInstance";
     private Mutex? _mutex;
     private EventWaitHandle? _activationEvent;
     private RegisteredWaitHandle? _activationWait;
@@ -14,6 +13,14 @@ internal sealed class SingleInstanceService : IDisposable
 
     public bool TryAcquire()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // The activation event uses Windows named kernel objects. Linux may
+            // run separate QSurfer processes until a desktop-native activation
+            // channel is introduced.
+            return true;
+        }
+
         try
         {
             var mutex = new Mutex(true, MutexName, out var createdNew);
@@ -59,6 +66,14 @@ internal sealed class SingleInstanceService : IDisposable
             _mutex = null;
         }
     }
+
+    private static string MutexName => RuntimeMode.IsDemo
+        ? @"Global\QSurfer.Demo.SingleInstance"
+        : @"Global\QSurfer.SingleInstance";
+
+    private static string ActivationEventName => RuntimeMode.IsDemo
+        ? @"Global\QSurfer.Demo.ActivateInstance"
+        : @"Global\QSurfer.ActivateInstance";
 
     private static void SignalExistingInstance()
     {

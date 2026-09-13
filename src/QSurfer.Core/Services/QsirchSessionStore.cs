@@ -14,14 +14,10 @@ internal sealed class QsirchSessionStore
 
     public QsirchSessionStore(AppConfig config)
     {
-        var identity = $"{(config.Ssl ? "https" : "http")}://{config.Host.Trim().ToUpperInvariant()}:{config.Port}/{config.User.Trim().ToUpperInvariant()}";
+        var identity = $"{(config.Ssl ? "https" : "http")}://{NasIdentity.NormalizeHost(config.Host).ToUpperInvariant()}:{config.Port}/{config.User.Trim().ToUpperInvariant()}";
         var sessionId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
         _entropy = Encoding.UTF8.GetBytes($"QSurfer.QsirchSession.v1|{identity}");
-        _path = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "QSurfer",
-            "sessions",
-            $"{sessionId}.bin");
+        _path = Path.Combine(UserDataPaths.Subdirectory("sessions"), $"{sessionId}.bin");
     }
 
     public string? Read()

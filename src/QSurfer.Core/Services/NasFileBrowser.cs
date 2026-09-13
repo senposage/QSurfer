@@ -2,6 +2,9 @@ using System.Globalization;
 using System.IO.Enumeration;
 using System.Runtime.InteropServices;
 using System.ComponentModel;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using QSurfer.Core.Models;
 
 namespace QSurfer.Core.Services;
 
@@ -63,7 +66,7 @@ public sealed class NasFileBrowser
             {
                 Function = FileOperationDelete,
                 From = item.FullPath + '\0' + '\0',
-                // NAS shares own their recycle policy. A normal shell delete lets QNAP
+                // NAS shares own their recycle policy. A normal shell delete lets the NAS
                 // route the request through @Recycle when that feature is enabled.
                 Flags = FileOperationNoConfirmation | FileOperationNoErrorUi,
             };
@@ -75,6 +78,46 @@ public sealed class NasFileBrowser
             if (operation.Aborted)
             {
                 throw new OperationCanceledException("The delete operation was canceled.");
+            }
+        }, cancellationToken);
+    }
+
+    public Task EmptyLocalRecycleBinAsync(string folderPath, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (OperatingSystem.IsWindows())
+            {
+                var driveRoot = Path.GetPathRoot(NormalizeFolder(folderPath));
+                if (string.IsNullOrWhiteSpace(driveRoot))
+                {
+                    throw new InvalidOperationException("Could not determine the drive for this Recycle Bin.");
+                }
+
+                var result = SHEmptyRecycleBinW(IntPtr.Zero, driveRoot, EmptyRecycleNoConfirmation | EmptyRecycleNoProgressUi | EmptyRecycleNoSound);
+                if (result != 0)
+                {
+                    throw new Win32Exception(result, "Windows could not empty this Recycle Bin.");
+                }
+                return;
+            }
+
+            var trashRoot = NormalizeFolder(folderPath);
+            if (!trashRoot.TrimEnd('/', '\\').EndsWith("Trash", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Only the local desktop Trash folder can be emptied.");
+            }
+
+            foreach (var child in new[] { "files", "info" })
+            {
+                var directory = Path.Combine(trashRoot, child);
+                if (!Directory.Exists(directory)) continue;
+                foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+                {
+                    if (Directory.Exists(entry)) Directory.Delete(entry, recursive: true);
+                    else File.Delete(entry);
+                }
             }
         }, cancellationToken);
     }
@@ -140,7 +183,7 @@ public sealed class NasFileBrowser
             var restoreItems = GetRecycleRestoreTargets(items);
             if (restoreItems.Count == 0)
             {
-                throw new InvalidOperationException("Select an item inside a QNAP Recycle Bin to restore it.");
+                throw new InvalidOperationException("Select an item inside a NAS Recycle Bin to restore it.");
             }
 
             foreach (var restore in restoreItems)
@@ -200,6 +243,10 @@ public sealed class NasFileBrowser
         return Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException("Creating Windows shortcut files is only available on Windows.");
+            }
             var destinationRoot = NormalizeFolder(destinationFolder);
             var name = Path.GetFileNameWithoutExtension(item.Name);
             var shortcutPath = FindAvailableDestination(destinationRoot, name + " - Shortcut.lnk", isFolder: false);
@@ -264,7 +311,16 @@ public sealed class NasFileBrowser
     {
         if (IsServerRoot(folderPath))
         {
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException("Browse the NAS through a mounted SMB folder on Linux; Windows UNC server roots are not available.");
+            }
             return BrowseServerShares(NormalizeServerRoot(folderPath), cancellationToken);
+        }
+
+        if (OperatingSystem.IsWindows() && IsWindowsRecycleBinRoot(folderPath))
+        {
+            return BrowseWindowsRecycleBin(NormalizeFolder(folderPath), cancellationToken);
         }
 
         var normalized = NormalizeFolder(folderPath);
@@ -306,11 +362,70 @@ public sealed class NasFileBrowser
         return new DirectoryReadResult(normalized, ordered, skipped);
     }
 
+    private static bool IsWindowsRecycleBinRoot(string folderPath) =>
+        Path.GetFileName((folderPath ?? "").TrimEnd('\\', '/'))
+            .Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase);
+
+    private static DirectoryReadResult BrowseWindowsRecycleBin(string folderPath, CancellationToken cancellationToken)
+    {
+        dynamic? shell = null;
+        dynamic? recycleBin = null;
+        try
+        {
+            var shellType = Type.GetTypeFromProgID("Shell.Application")
+                ?? throw new InvalidOperationException("The Windows Shell is not available.");
+            shell = Activator.CreateInstance(shellType);
+            recycleBin = shell!.NameSpace(10); // CSIDL_BITBUCKET
+            if (recycleBin == null)
+            {
+                throw new IOException("Windows could not open the Recycle Bin.");
+            }
+
+            var items = new List<BrowserItem>();
+            foreach (dynamic shellItem in recycleBin.Items())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var path = Convert.ToString(shellItem.Path) ?? "";
+                    var name = Convert.ToString(shellItem.Name);
+                    if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    var modified = DateTime.TryParse(Convert.ToString(shellItem.ModifyDate), CultureInfo.CurrentCulture, DateTimeStyles.None, out DateTime value)
+                        ? value
+                        : DateTime.MinValue;
+                    items.Add(new BrowserItem(name, path, Convert.ToBoolean(shellItem.IsFolder), 0, modified)
+                    {
+                        Deleted = modified == DateTime.MinValue ? null : modified,
+                    });
+                }
+                catch (Exception ex) when (ex is COMException or InvalidCastException or FormatException)
+                {
+                    AppLogger.Warn("browse", $"could not read a Windows Recycle Bin item: {ex.Message}");
+                }
+            }
+
+            return new DirectoryReadResult(
+                folderPath,
+                items.OrderByDescending(item => item.DisplayDate).ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase).ToList(),
+                0);
+        }
+        finally
+        {
+            if (recycleBin != null && Marshal.IsComObject(recycleBin)) Marshal.FinalReleaseComObject(recycleBin);
+            if (shell != null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
     private static DirectoryReadResult BrowseRecycleBin(
         string folderPath,
         Action<IReadOnlyList<BrowserItem>>? batchReceived,
         CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
         var normalized = NormalizeFolder(folderPath);
         if (!Directory.Exists(normalized))
         {
@@ -318,14 +433,35 @@ public sealed class NasFileBrowser
         }
 
         var items = new List<BrowserItem>();
+        var itemsGate = new object();
         var batch = new List<BrowserItem>(25);
-        var pendingFolders = new Stack<string>();
+        var sentInitialBatch = false;
         var skipped = 0;
-        pendingFolders.Push(normalized);
-        while (pendingFolders.Count > 0)
+
+        void Emit(BrowserItem item)
+        {
+            IReadOnlyList<BrowserItem>? completedBatch = null;
+            lock (itemsGate)
+            {
+                items.Add(item);
+                batch.Add(item);
+                var batchThreshold = sentInitialBatch ? 25 : 5;
+                if (batch.Count == batchThreshold)
+                {
+                    completedBatch = batch.ToArray();
+                    batch.Clear();
+                    sentInitialBatch = true;
+                }
+            }
+            if (completedBatch != null)
+            {
+                batchReceived?.Invoke(completedBatch);
+            }
+        }
+
+        void ScanBranch(string current)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var current = pendingFolders.Pop();
             try
             {
                 foreach (var entry in EnumerateRecycleEntries(current))
@@ -335,7 +471,7 @@ public sealed class NasFileBrowser
                     {
                         if (entry.IsFolder)
                         {
-                            pendingFolders.Push(entry.FullPath);
+                            ScanBranch(entry.FullPath);
                         }
                         else
                         {
@@ -349,44 +485,99 @@ public sealed class NasFileBrowser
                                     ? Path.GetDirectoryName(destinationPath) ?? destinationPath
                                     : item.DisplayPath,
                             };
-                            items.Add(item);
-                            batch.Add(item);
-                            if (batch.Count == 25)
-                            {
-                                batchReceived?.Invoke(batch.ToArray());
-                                batch.Clear();
-                            }
+                            Emit(item);
                         }
                     }
                     catch (UnauthorizedAccessException)
                     {
-                        skipped++;
+                        Interlocked.Increment(ref skipped);
                     }
                     catch (IOException)
                     {
-                        skipped++;
+                        Interlocked.Increment(ref skipped);
                     }
                 }
             }
             catch (UnauthorizedAccessException)
             {
-                skipped++;
+                Interlocked.Increment(ref skipped);
             }
             catch (IOException)
             {
-                skipped++;
+                Interlocked.Increment(ref skipped);
             }
         }
 
-        if (batch.Count > 0)
+        // The NAS recycle hierarchy mirrors the original shares. The root's
+        // immediate children are independent branches, so scan them concurrently
+        // rather than serializing every SMB directory metadata round trip.
+        var rootFolders = new List<RecycleScanEntry>();
+        foreach (var entry in EnumerateRecycleEntries(normalized))
         {
-            batchReceived?.Invoke(batch.ToArray());
+            cancellationToken.ThrowIfCancellationRequested();
+            if (entry.IsFolder)
+            {
+                rootFolders.Add(entry);
+                continue;
+            }
+
+            var item = new BrowserItem(entry.Name, entry.FullPath, false, entry.Size, entry.Modified)
+            {
+                Deleted = entry.Created,
+            };
+            Emit(item with
+            {
+                DisplayPath = TryGetRecycleRestoreTarget(item, out var destinationPath)
+                    ? Path.GetDirectoryName(destinationPath) ?? destinationPath
+                    : item.DisplayPath,
+            });
         }
 
-        var ordered = items
-            .OrderByDescending(item => item.DisplayDate)
-            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var branches = new ConcurrentQueue<RecycleScanEntry>(
+            rootFolders.OrderByDescending(folder => folder.Modified));
+        var workerCount = Math.Min(8, branches.Count);
+        var workers = new Task[workerCount];
+        for (var index = 0; index < workers.Length; index++)
+        {
+            // LongRunning asks the scheduler to provision this bounded worker
+            // immediately instead of ramping up the shared thread pool.
+            workers[index] = Task.Factory.StartNew(
+                () =>
+                {
+                    while (branches.TryDequeue(out var branch))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        ScanBranch(branch.FullPath);
+                    }
+                },
+                cancellationToken,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+        }
+        Task.WaitAll(workers, cancellationToken);
+
+        IReadOnlyList<BrowserItem>? finalBatch = null;
+        lock (itemsGate)
+        {
+            if (batch.Count > 0)
+            {
+                finalBatch = batch.ToArray();
+            }
+        }
+        if (finalBatch != null)
+        {
+            batchReceived?.Invoke(finalBatch);
+        }
+
+        List<BrowserItem> ordered;
+        lock (itemsGate)
+        {
+            ordered = items
+                .OrderByDescending(item => item.DisplayDate)
+                .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+        }
+        AppLogger.Info("browse", $"recycle scan folder=\"{normalized}\" files={ordered.Count} skipped={skipped} elapsed={stopwatch.ElapsedMilliseconds}ms");
         return new DirectoryReadResult(normalized, ordered, skipped);
     }
 
@@ -587,6 +778,10 @@ public sealed class NasFileBrowser
 
     private static DirectoryReadResult BrowseServerShares(string serverRoot, CancellationToken cancellationToken)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Windows UNC share discovery is not available on this platform.");
+        }
         cancellationToken.ThrowIfCancellationRequested();
         var status = NetShareEnum(serverRoot, 1, out var buffer, -1, out var read, out _, IntPtr.Zero);
         if (status is not 0 and not 234)
@@ -649,6 +844,9 @@ public sealed class NasFileBrowser
     private const int FileOperationDelete = 3;
     private const ushort FileOperationNoConfirmation = 0x0010;
     private const ushort FileOperationNoErrorUi = 0x0400;
+    private const uint EmptyRecycleNoConfirmation = 0x00000001;
+    private const uint EmptyRecycleNoProgressUi = 0x00000002;
+    private const uint EmptyRecycleNoSound = 0x00000004;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct ShellFileOperation
@@ -665,6 +863,9 @@ public sealed class NasFileBrowser
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SHFileOperationW(ref ShellFileOperation operation);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHEmptyRecycleBinW(IntPtr hwnd, string? rootPath, uint flags);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -689,9 +890,17 @@ public sealed record BrowserItem(string Name, string FullPath, bool IsFolder, lo
     private object? _iconSource;
 
     public DateTime? Deleted { get; init; }
-    public DateTime DisplayDate => Deleted ?? Modified;
+    public bool IsDrive { get; init; }
+    public double DriveUsedFraction { get; init; }
+    public string DriveSpaceText { get; init; } = "";
+    public DateTime? DisplayDate => Modified == DateTime.MinValue ? null : Deleted ?? Modified;
+    public bool IsRecycleBinFolder => IsFolder &&
+        (Name.Equals("@Recycle", StringComparison.OrdinalIgnoreCase) ||
+         Name.Equals("@RecycleBin", StringComparison.OrdinalIgnoreCase) ||
+         Name.Equals("#recycle", StringComparison.OrdinalIgnoreCase) ||
+         Name.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase));
 
-    public string Glyph => IsFolder ? "\uE8B7" : "\uE8A5";
+    public string Glyph => IsDrive ? "\U0001F4BD" : IsRecycleBinFolder ? "\u267B" : IsFolder ? "\U0001F4C1" : SearchResult.FileGlyph(Path.GetExtension(Name));
     public object? IconSource
     {
         get => _iconSource;
@@ -706,7 +915,7 @@ public sealed record BrowserItem(string Name, string FullPath, bool IsFolder, lo
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IconSource)));
         }
     }
-    public string Kind => IsFolder ? "Folder" : string.IsNullOrWhiteSpace(Path.GetExtension(Name)) ? "File" : Path.GetExtension(Name).TrimStart('.').ToUpperInvariant() + " File";
+    public string Kind => IsDrive ? "Drive" : IsFolder ? "Folder" : string.IsNullOrWhiteSpace(Path.GetExtension(Name)) ? "File" : Path.GetExtension(Name).TrimStart('.').ToUpperInvariant() + " File";
     public string SizeText => IsFolder ? "" : Size >= 1_048_576
         ? string.Format(CultureInfo.CurrentCulture, "{0:N1} MB", Size / 1_048_576d)
         : string.Format(CultureInfo.CurrentCulture, "{0:N0} KB", Math.Max(1, Size / 1024d));

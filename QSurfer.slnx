@@ -3,4 +3,7 @@
     <Project Path="src/QSurfer.Avalonia/QSurfer.Avalonia.csproj" />
     <Project Path="src/QSurfer.Core/QSurfer.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/QSurfer.Core.Tests/QSurfer.Core.Tests.csproj" />
+  </Folder>
 </Solution>

@@ -39,7 +39,7 @@
       <Border x:Name="EmptyState" Classes="empty-state" IsVisible="False">
         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" MaxWidth="500">
           <TextBlock Text="No earlier version found" Classes="empty-title" HorizontalAlignment="Center" />
-          <TextBlock Text="The selected item is not available in the accessible QNAP snapshots." Classes="empty-copy" TextWrapping="Wrap" TextAlignment="Center" />
+          <TextBlock Text="The selected item is not available in the accessible NAS snapshots." Classes="empty-copy" TextWrapping="Wrap" TextAlignment="Center" />
         </StackPanel>
       </Border>
     </Grid>
