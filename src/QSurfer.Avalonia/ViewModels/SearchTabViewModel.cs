@@ -1099,6 +1099,12 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     private static string CompactScopeDisplayPath(string path)
     {
         var normalized = NormalizeScopePath(path);
+        if (!OperatingSystem.IsWindows())
+        {
+            var unixPath = normalized.Replace('\\', '/');
+            return unixPath.StartsWith('/') ? unixPath : "/" + unixPath;
+        }
+
         if (normalized.Length == 2 && char.IsLetter(normalized[0]) && normalized[1] == ':')
         {
             return normalized + "\\";
