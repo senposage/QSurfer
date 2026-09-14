@@ -347,7 +347,7 @@ public sealed class AppConfig
     };
     private static ScopedTextRule CloneTextRule(ScopedTextRule rule) => new() { Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
     private static VisibilityRule CloneVisibilityRule(VisibilityRule rule) => new() { Access = rule.Access, Identity = rule.Identity, Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
-    private static PinnedTabConfig ClonePinnedTab(PinnedTabConfig tab) => new() { Title = tab.Title, Query = tab.Query, ViewKey = tab.ViewKey, SortValue = tab.SortValue, TypeIndex = tab.TypeIndex, TypeNames = tab.TypeNames.ToList(), DateFrom = tab.DateFrom, DateTo = tab.DateTo, ExactMatch = tab.ExactMatch, SearchContents = tab.SearchContents, ScopePaths = tab.ScopePaths.ToList(), ExcludedScopePaths = tab.ExcludedScopePaths.ToList() };
+    private static PinnedTabConfig ClonePinnedTab(PinnedTabConfig tab) => new() { Title = tab.Title, Query = tab.Query, ViewKey = tab.ViewKey, SortValue = tab.SortValue, TypeIndex = tab.TypeIndex, TypeNames = tab.TypeNames.ToList(), DateFrom = tab.DateFrom, DateTo = tab.DateTo, ExactMatch = tab.ExactMatch, SearchContents = tab.SearchContents, SuppressFolderDates = tab.SuppressFolderDates, RequiredTerms = tab.RequiredTerms.ToList(), AnyTerms = tab.AnyTerms.ToList(), ExcludedTerms = tab.ExcludedTerms.ToList(), ScopePaths = tab.ScopePaths.ToList(), ExcludedScopePaths = tab.ExcludedScopePaths.ToList() };
     private static ExcludeConfig CloneExclude(ExcludeConfig exclude) => new()
     {
         FolderRules = exclude.FolderRules.Select(CloneTextRule).ToList(),
@@ -557,6 +557,18 @@ public sealed class PinnedTabConfig
 
     [JsonPropertyName("search_contents")]
     public bool SearchContents { get; set; }
+
+    [JsonPropertyName("suppress_folder_dates")]
+    public bool SuppressFolderDates { get; set; }
+
+    [JsonPropertyName("required_terms")]
+    public List<string> RequiredTerms { get; set; } = [];
+
+    [JsonPropertyName("any_terms")]
+    public List<string> AnyTerms { get; set; } = [];
+
+    [JsonPropertyName("excluded_terms")]
+    public List<string> ExcludedTerms { get; set; } = [];
 
     [JsonPropertyName("scope_paths")]
     public List<string> ScopePaths { get; set; } = [];

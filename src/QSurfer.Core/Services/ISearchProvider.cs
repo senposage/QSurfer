@@ -18,7 +18,8 @@ public interface ISearchProvider : IDisposable
         string sortDirection,
         Func<IReadOnlyList<SearchResult>, Task>? batchReceived,
         CancellationToken cancellationToken,
-        SearchProviderScope? scope = null);
+        SearchProviderScope? scope = null,
+        SearchProviderQueryOptions? options = null);
 
     Task<IReadOnlyList<SearchResult>> SearchDirectoriesAsync(
         string query,
@@ -33,6 +34,19 @@ public sealed record SearchProviderScope(IReadOnlyList<string> IncludePaths, IRe
 {
     public static readonly SearchProviderScope Empty = new([], []);
     public bool HasPaths => IncludePaths.Count > 0 || ExcludePaths.Count > 0;
+}
+
+// Provider-neutral intent from the existing search controls. Providers that do
+// not have an equivalent protocol simply retain their established behavior.
+public sealed record SearchProviderQueryOptions(
+    bool ExactMatch,
+    bool SearchContents,
+    IReadOnlyList<string>? RequiredTerms = null,
+    IReadOnlyList<string>? AnyTerms = null,
+    IReadOnlyList<string>? ExcludedTerms = null)
+{
+    public bool HasBooleanTerms =>
+        RequiredTerms is { Count: > 0 } || AnyTerms is { Count: > 0 } || ExcludedTerms is { Count: > 0 };
 }
 
 // Lets a provider decline a scope it can prove does not belong to its index.

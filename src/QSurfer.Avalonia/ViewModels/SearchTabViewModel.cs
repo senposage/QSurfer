@@ -35,12 +35,17 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     private bool _isSearching;
     private bool _exactMatch;
     private bool _searchContents;
+    private bool _isBooleanFilterOpen;
+    private string _requiredTerms = "";
+    private string _anyTerms = "";
+    private string _excludedTerms = "";
     private bool _isPinned;
     private string _workspaceGlyph = "\U0001F50D";
     private bool _isTypeFilterOpen;
     private FileTypeFilter _selectedFileType;
     private ResultViewMode _selectedViewMode;
     private ResultSortMode _selectedSortMode;
+    private bool _suppressFolderDates;
     private SearchScope _selectedScope;
     private DateTime? _dateFrom;
     private DateTime? _dateTo;
@@ -598,6 +603,49 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public bool IsBooleanFilterOpen
+    {
+        get => _isBooleanFilterOpen;
+        set => SetField(ref _isBooleanFilterOpen, value);
+    }
+
+    public string RequiredTerms
+    {
+        get => _requiredTerms;
+        set => SetBooleanTerms(ref _requiredTerms, value, nameof(RequiredTerms));
+    }
+
+    public string AnyTerms
+    {
+        get => _anyTerms;
+        set => SetBooleanTerms(ref _anyTerms, value, nameof(AnyTerms));
+    }
+
+    public string ExcludedTerms
+    {
+        get => _excludedTerms;
+        set => SetBooleanTerms(ref _excludedTerms, value, nameof(ExcludedTerms));
+    }
+
+    public IReadOnlyList<string> RequiredTermList => SplitBooleanTerms(RequiredTerms);
+    public IReadOnlyList<string> AnyTermList => SplitBooleanTerms(AnyTerms);
+    public IReadOnlyList<string> ExcludedTermList => SplitBooleanTerms(ExcludedTerms);
+    public bool HasBooleanTerms => RequiredTermList.Count > 0 || AnyTermList.Count > 0 || ExcludedTermList.Count > 0;
+
+    public void RestoreBooleanTerms(IEnumerable<string>? required, IEnumerable<string>? any, IEnumerable<string>? excluded)
+    {
+        _requiredTerms = JoinBooleanTerms(required);
+        _anyTerms = JoinBooleanTerms(any);
+        _excludedTerms = JoinBooleanTerms(excluded);
+        OnPropertyChanged(nameof(RequiredTerms));
+        OnPropertyChanged(nameof(AnyTerms));
+        OnPropertyChanged(nameof(ExcludedTerms));
+        OnPropertyChanged(nameof(RequiredTermList));
+        OnPropertyChanged(nameof(AnyTermList));
+        OnPropertyChanged(nameof(ExcludedTermList));
+        OnPropertyChanged(nameof(HasBooleanTerms));
+    }
+
     public bool IsPinned
     {
         get => _isPinned;
@@ -901,6 +949,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     {
         ExactMatch = false;
         SearchContents = false;
+        RestoreBooleanTerms([], [], []);
         SelectedDatePreset = DatePresets[0];
         RestoreScope("all", "");
         foreach (var option in TypeFilterOptions)
@@ -910,6 +959,41 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         ApplyFilters();
         return Task.CompletedTask;
     }
+
+    public bool SuppressFolderDates
+    {
+        get => _suppressFolderDates;
+        set
+        {
+            if (SetField(ref _suppressFolderDates, value))
+            {
+                ApplyFilters();
+            }
+        }
+    }
+
+    private void SetBooleanTerms(ref string field, string? value, string propertyName)
+    {
+        if (!SetField(ref field, value ?? "", propertyName))
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(RequiredTermList));
+        OnPropertyChanged(nameof(AnyTermList));
+        OnPropertyChanged(nameof(ExcludedTermList));
+        OnPropertyChanged(nameof(HasBooleanTerms));
+    }
+
+    private static IReadOnlyList<string> SplitBooleanTerms(string? value) => (value ?? "")
+        .Split([',', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(term => !string.IsNullOrWhiteSpace(term))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    private static string JoinBooleanTerms(IEnumerable<string>? terms) => string.Join(
+        Environment.NewLine,
+        (terms ?? []).Where(term => !string.IsNullOrWhiteSpace(term)).Select(term => term.Trim()));
 
     private void SelectCustomDatePreset()
     {
@@ -1135,11 +1219,22 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             ? filter.IncludeFolders
             : filter.IncludeAllFiles || filter.Extensions.Contains(result.Extension, StringComparer.OrdinalIgnoreCase);
 
-    private IEnumerable<SearchResult> Sort(IEnumerable<SearchResult> source)
+    private IEnumerable<SearchResult> Sort(IEnumerable<SearchResult> source, bool applyFolderDateSuppression = true)
     {
         var rules = _sortRules.Count == 0
             ? [new SortRule("folder", false)]
             : _sortRules;
+
+        // Folder timestamps can be technically accurate but misleading for a
+        // work-focused recent view. Keep folders alphabetical while files retain
+        // their date ordering when the user opts out of folder dates.
+        if (applyFolderDateSuppression && SuppressFolderDates && IsDateSort(rules[0]))
+        {
+            return source.Where(result => result.IsFolder)
+                .OrderBy(result => result.FileName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(StableResultPath, StringComparer.OrdinalIgnoreCase)
+                .Concat(Sort(source.Where(result => !result.IsFolder), applyFolderDateSuppression: false));
+        }
 
         // Folder groups is deliberately Explorer-like: folders are surfaced first.
         // Every other arrangement sorts folders and files together by the selected
@@ -1214,6 +1309,10 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         };
 
     private static bool DefaultSortDescending(string key) => key is "modified" or "recent" or "size";
+
+    private static bool IsDateSort(SortRule rule) =>
+        rule.Key.Equals("modified", StringComparison.OrdinalIgnoreCase) ||
+        rule.Key.Equals("recent", StringComparison.OrdinalIgnoreCase);
 
     private static string StableResultPath(SearchResult result) =>
         NormalizeNasPath(string.IsNullOrWhiteSpace(result.Path)

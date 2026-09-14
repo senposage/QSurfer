@@ -637,6 +637,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         _ = LoadNasNavigationRootAsync();
         IsPreviewVisible = _config.Behavior.PreviewPane;
         OnPropertyChanged(nameof(IsConnectionConfigured));
+        OnPropertyChanged(nameof(IsSearchServiceConfigured));
         OnPropertyChanged(nameof(NeedsConnection));
         OnPropertyChanged(nameof(ConnectionSummary));
         OnPropertyChanged(nameof(NasConnectionStatus));
@@ -1386,6 +1387,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         tab.Query,
         tab.ExactMatch,
         tab.SearchContents,
+        tab.SuppressFolderDates,
+        tab.RequiredTermList,
+        tab.AnyTermList,
+        tab.ExcludedTermList,
         tab.IsPinned,
         tab.TypeFilterOptions.Where(option => option.IsSelected).Select(option => option.Name).ToList(),
         tab.SelectedViewMode.Key,
@@ -1410,6 +1415,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         tab.Query = snapshot.Query;
         tab.ExactMatch = snapshot.ExactMatch;
         tab.SearchContents = snapshot.SearchContents;
+        tab.SuppressFolderDates = snapshot.SuppressFolderDates;
+        tab.RestoreBooleanTerms(snapshot.RequiredTerms, snapshot.AnyTerms, snapshot.ExcludedTerms);
         tab.ApplyTypeSelection(snapshot.SelectedTypeNames);
         tab.SelectedViewMode = tab.ViewModes.First(mode => mode.Key.Equals(snapshot.ViewKey, StringComparison.OrdinalIgnoreCase));
         tab.ApplySortSpecification(snapshot.SortSpecification);
@@ -1445,6 +1452,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             tab.DateTo = saved.DateTo ?? DateTime.Today;
             tab.ExactMatch = saved.ExactMatch;
             tab.SearchContents = saved.SearchContents;
+            tab.SuppressFolderDates = saved.SuppressFolderDates;
+            tab.RestoreBooleanTerms(saved.RequiredTerms, saved.AnyTerms, saved.ExcludedTerms);
             tab.RestoreScope("folder", null, saved.ScopePaths, saved.ExcludedScopePaths);
             tab.IsPinned = true;
             _pinnedTabsAwaitingReload.Add(tab);
@@ -1547,14 +1556,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     version,
                     starredKeys)).GetTask(),
                 token,
-                CreateSearchProviderScope(tab));
+                CreateSearchProviderScope(tab),
+                CreateSearchProviderOptions(tab));
 
-            var folders = typeFilter.IncludeFolders
-                ? _client.SearchDirectoriesAsync(query, 100, token, providerScope)
-                : Task.FromResult<IReadOnlyList<SearchResult>>([]);
+            // Qsirch's regular endpoint is file-oriented. Folder Groups therefore
+            // asks the providers' directory endpoint for matching folders, then
+            // applies the same client-side rules and scope filtering as all results.
+            // Content searches deliberately do not include folders.
+            var matchingFolders = tab.PrimarySortKey.Equals("folder", StringComparison.OrdinalIgnoreCase) &&
+                                  !tab.SearchContents
+                ? _client.SearchDirectoriesAsync(query, 100, token, CreateSearchProviderScope(tab))
+                : null;
 
-            _ = PaintDirectoryResultsAsync(tab, folders, token, version, starredKeys);
             await recentFiles;
+            if (matchingFolders != null)
+            {
+                var folders = await matchingFolders;
+                await Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, folders, token, version, starredKeys));
+            }
 
             // The fast recent pass is the first result page whenever the requested
             // ordering is also newest-first. Reusing it avoids asking both providers
@@ -1579,7 +1598,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     serverSortDirection,
                     batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
                     token,
-                    CreateSearchProviderScope(tab));
+                    CreateSearchProviderScope(tab),
+                    CreateSearchProviderOptions(tab));
             }
 
             var offset = firstPage.Count;
@@ -1610,7 +1630,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     serverSortDirection,
                     batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
                     token,
-                    CreateSearchProviderScope(tab));
+                    CreateSearchProviderScope(tab),
+                    CreateSearchProviderOptions(tab));
                 offset += page.Count;
                 pagingComplete = page.Count == 0;
                 AppLogger.Info("search", $"QSurfer tab=\"{tab.Title}\" page offset={offset - page.Count} count={page.Count} visible={tab.Results.Count} limit={resultLimit}");
@@ -1801,7 +1822,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     serverSortDirection,
                     batch => Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, batch, token, version, starredKeys)).GetTask(),
                     token,
-                    CreateSearchProviderScope(tab));
+                    CreateSearchProviderScope(tab),
+                    CreateSearchProviderOptions(tab));
                 offset += page.Count;
                 pagingComplete = page.Count == 0;
                 AppLogger.Info("search", $"QSurfer tab=\"{tab.Title}\" load-more offset={offset - page.Count} count={page.Count} visible={tab.Results.Count}");
@@ -1927,6 +1949,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             tab.DateTo = savedSearch.DateTo;
             tab.ExactMatch = savedSearch.ExactMatch;
             tab.SearchContents = savedSearch.SearchContents;
+            tab.SuppressFolderDates = savedSearch.SuppressFolderDates;
+            tab.RestoreBooleanTerms(savedSearch.RequiredTerms, savedSearch.AnyTerms, savedSearch.ExcludedTerms);
             tab.RestoreScope("folder", null, savedSearch.ScopePaths, savedSearch.ExcludedScopePaths);
             if (tab.SearchCommand.CanExecute(null))
             {
@@ -2289,7 +2313,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             tab.DateFrom,
             tab.DateTo,
             tab.ExactMatch,
-            tab.SearchContents);
+            tab.SearchContents,
+            tab.RequiredTermList,
+            tab.AnyTermList,
+            tab.ExcludedTermList,
+            tab.SuppressFolderDates);
         var savedSearchId = await Task.Run(() => _history.SaveSearch(savedSearch));
         if (savedSearchId is not long persistedId)
         {
@@ -2325,7 +2353,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 savedSearchId,
                 tab.SavedSearchName,
                 tab.Query,
-                [], [], [], "details", "recent:desc", null, null, false, false))
+                [], [], [], "details", "recent:desc", null, null, false, false, [], [], []))
             : Task.CompletedTask;
 
     public async Task OverwriteSavedSearchAsync(SearchTabViewModel tab, SavedSearch target)
@@ -2349,7 +2377,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             tab.DateFrom,
             tab.DateTo,
             tab.ExactMatch,
-            tab.SearchContents);
+            tab.SearchContents,
+            tab.RequiredTermList,
+            tab.AnyTermList,
+            tab.ExcludedTermList,
+            tab.SuppressFolderDates);
         var saved = await Task.Run(() => _history.UpdateSavedSearch(target.Id, savedSearch));
         if (!saved)
         {
@@ -2363,28 +2395,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private Task SaveCurrentSearchAsync(SearchTabViewModel tab) => SaveSearchAsync(tab, tab.Query);
-
-    private async Task PaintDirectoryResultsAsync(
-        SearchTabViewModel tab,
-        Task<IReadOnlyList<SearchResult>> folders,
-        CancellationToken token,
-        int version,
-        ISet<string> starredKeys)
-    {
-        try
-        {
-            var results = await folders;
-            await Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, results, token, version, starredKeys));
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-            AppLogger.Info("search", $"QSurfer directory search canceled tab=\"{tab.Title}\"");
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("search", $"QSurfer directory search skipped tab=\"{tab.Title}\" error=\"{ex.Message}\"");
-        }
-    }
 
     private void AddVisibleResults(SearchTabViewModel tab, IEnumerable<SearchResult> source, CancellationToken token, int version, ISet<string>? starredKeys = null)
     {
@@ -2659,6 +2669,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         tab.ScopePaths.ToList(),
         tab.ExcludedScopePaths.ToList());
 
+    private static SearchProviderQueryOptions CreateSearchProviderOptions(SearchTabViewModel tab) => new(
+        tab.ExactMatch,
+        tab.SearchContents,
+        tab.RequiredTermList,
+        tab.AnyTermList,
+        tab.ExcludedTermList);
+
     public async Task RemoveRecentSearchAsync(string query)
     {
         await Task.Run(() => _history.DeleteRecentSearch(query));
@@ -2701,6 +2718,44 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private static IReadOnlyList<SearchResult> RecentResults(IEnumerable<SearchResult> results, DateTime cutoff) =>
         results.Where(result => result.ModifiedDate is { } modified && modified.Date >= cutoff).ToList();
 
+    private async Task PopulateFolderGroupResultsAsync(SearchTabViewModel tab)
+    {
+        if (tab.IsSearching || tab.SearchContents ||
+            !tab.PrimarySortKey.Equals("folder", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var (query, _) = ParseSearchInput(tab.Query);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return;
+        }
+
+        var version = tab.SearchVersion;
+        var token = tab.SearchCancellation?.Token ?? CancellationToken.None;
+        try
+        {
+            SetTabStatus(tab, "Loading matching folders...");
+            var folders = await _client.SearchDirectoriesAsync(query, 100, token, CreateSearchProviderScope(tab));
+            var starredKeys = await Task.Run(_history.StarredKeys, token);
+            await Dispatcher.UIThread.InvokeAsync(() => AddVisibleResults(tab, folders, token, version, starredKeys));
+            if (!token.IsCancellationRequested && tab.SearchVersion == version)
+            {
+                SetTabStatus(tab, $"Ready {tab.Results.Count:n0} results");
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // The file result set remains useful if a provider cannot offer its
+            // optional directory endpoint.
+            AppLogger.Warn("search", $"folder-group directory query failed tab=\"{tab.Title}\" error=\"{ex.Message}\"");
+        }
+    }
+
     private void SearchTabPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (sender is not SearchTabViewModel tab)
@@ -2732,6 +2787,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             _ = tab.SearchCommand.ExecuteAsync();
         }
+        if (e.PropertyName == nameof(SearchTabViewModel.SelectedSortMode) &&
+            tab.PrimarySortKey.Equals("folder", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = PopulateFolderGroupResultsAsync(tab);
+        }
         if (tab.IsPinned && e.PropertyName is nameof(SearchTabViewModel.Query) or
             nameof(SearchTabViewModel.SelectedViewMode) or
             nameof(SearchTabViewModel.SelectedSortMode) or
@@ -2741,6 +2801,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             nameof(SearchTabViewModel.DateTo) or
             nameof(SearchTabViewModel.ExactMatch) or
             nameof(SearchTabViewModel.SearchContents) or
+            nameof(SearchTabViewModel.SuppressFolderDates) or
+            nameof(SearchTabViewModel.RequiredTerms) or
+            nameof(SearchTabViewModel.AnyTerms) or
+            nameof(SearchTabViewModel.ExcludedTerms) or
             nameof(SearchTabViewModel.ScopePaths) or
             nameof(SearchTabViewModel.ExcludedScopePaths))
         {
@@ -4254,6 +4318,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 DateTo = tab.DateTo,
                 ExactMatch = tab.ExactMatch,
                 SearchContents = tab.SearchContents,
+                SuppressFolderDates = tab.SuppressFolderDates,
+                RequiredTerms = tab.RequiredTermList.ToList(),
+                AnyTerms = tab.AnyTermList.ToList(),
+                ExcludedTerms = tab.ExcludedTermList.ToList(),
                 ScopePaths = tab.ScopePaths.ToList(),
                 ExcludedScopePaths = tab.ExcludedScopePaths.ToList(),
             })
@@ -4435,6 +4503,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         string Query,
         bool ExactMatch,
         bool SearchContents,
+        bool SuppressFolderDates,
+        IReadOnlyList<string> RequiredTerms,
+        IReadOnlyList<string> AnyTerms,
+        IReadOnlyList<string> ExcludedTerms,
         bool IsPinned,
         IReadOnlyList<string> SelectedTypeNames,
         string ViewKey,

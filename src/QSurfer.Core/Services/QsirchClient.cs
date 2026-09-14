@@ -70,7 +70,8 @@ public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwar
         string sortDir,
         Func<IReadOnlyList<SearchResult>, Task>? batchReceived,
         CancellationToken cancellationToken,
-        SearchProviderScope? scope = null)
+        SearchProviderScope? scope = null,
+        SearchProviderQueryOptions? options = null)
     {
         if (string.IsNullOrWhiteSpace(config.Host) || string.IsNullOrWhiteSpace(config.User) || string.IsNullOrWhiteSpace(config.Password))
         {
@@ -176,7 +177,7 @@ public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwar
                 continue;
             }
 
-            var name = Path.GetFileName(normalizedPath);
+            var name = LeafName(normalizedPath);
             if (string.IsNullOrWhiteSpace(name))
             {
                 continue;
@@ -494,12 +495,12 @@ public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwar
 
     public static SearchResult ResultFromJson(JsonElement element)
     {
-        var name = GetName(element);
+        var name = LeafName(GetName(element));
         var ext = GetString(element, "extension").TrimStart('.');
         var path = GetPath(element);
         if (string.IsNullOrWhiteSpace(name))
         {
-            var nameFromPath = Path.GetFileName(path.TrimEnd('\\', '/'));
+            var nameFromPath = LeafName(path);
             if (!string.IsNullOrWhiteSpace(ext) && nameFromPath.EndsWith("." + ext, StringComparison.OrdinalIgnoreCase))
             {
                 name = nameFromPath;
@@ -694,6 +695,14 @@ public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwar
             }
         }
         return "";
+    }
+
+    // Qsirch paths are NAS paths and can use either separator on every platform.
+    private static string LeafName(string? value)
+    {
+        var trimmed = (value ?? "").Trim().TrimEnd('\\', '/');
+        var separator = trimmed.LastIndexOfAny(['\\', '/']);
+        return separator >= 0 ? trimmed[(separator + 1)..] : trimmed;
     }
 
     private static string? GetPreviewInfoValue(JsonElement element, string key)

@@ -143,7 +143,8 @@ public sealed class HistoryStore
                 using var command = connection.CreateCommand();
                 command.CommandText = """
                     SELECT id, name, query, scope_paths_json, excluded_scope_paths_json, type_names_json,
-                           view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents
+                           view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents,
+                           required_terms_json, any_terms_json, excluded_terms_json, suppress_folder_dates
                     FROM saved_searches
                     WHERE machine_id = $machine AND user_id = $user
                     ORDER BY name COLLATE NOCASE;
@@ -165,7 +166,11 @@ public sealed class HistoryStore
                         ReadTicks(reader, 8),
                         ReadTicks(reader, 9) ?? DateTime.Today,
                         !reader.IsDBNull(10) && reader.GetInt64(10) != 0,
-                        !reader.IsDBNull(11) && reader.GetInt64(11) != 0));
+                        !reader.IsDBNull(11) && reader.GetInt64(11) != 0,
+                        ParseGroups(reader.IsDBNull(12) ? null : reader.GetString(12)),
+                        ParseGroups(reader.IsDBNull(13) ? null : reader.GetString(13)),
+                        ParseGroups(reader.IsDBNull(14) ? null : reader.GetString(14)),
+                        !reader.IsDBNull(15) && reader.GetInt64(15) != 0));
                 }
                 return results;
             }
@@ -188,10 +193,12 @@ public sealed class HistoryStore
                 command.CommandText = """
                     INSERT INTO saved_searches (
                       machine_id, user_id, name, query, scope_paths_json, excluded_scope_paths_json, type_names_json,
-                      view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents, saved_at)
+                      view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents,
+                      required_terms_json, any_terms_json, excluded_terms_json, suppress_folder_dates, saved_at)
                     VALUES (
                       $machine, $user, $name, $query, $scopePaths, $excludedScopePaths, $typeNames,
-                      $viewKey, $sortValue, $dateFrom, $dateTo, $exactMatch, $searchContents, $saved)
+                      $viewKey, $sortValue, $dateFrom, $dateTo, $exactMatch, $searchContents,
+                      $requiredTerms, $anyTerms, $excludedTerms, $suppressFolderDates, $saved)
                     ;
                     """;
                 BindScope(command);
@@ -206,6 +213,10 @@ public sealed class HistoryStore
                 command.Parameters.AddWithValue("$dateTo", search.DateTo?.Ticks ?? 0L);
                 command.Parameters.AddWithValue("$exactMatch", search.ExactMatch ? 1 : 0);
                 command.Parameters.AddWithValue("$searchContents", search.SearchContents ? 1 : 0);
+                command.Parameters.AddWithValue("$requiredTerms", JsonSerializer.Serialize(search.RequiredTerms ?? []));
+                command.Parameters.AddWithValue("$anyTerms", JsonSerializer.Serialize(search.AnyTerms ?? []));
+                command.Parameters.AddWithValue("$excludedTerms", JsonSerializer.Serialize(search.ExcludedTerms ?? []));
+                command.Parameters.AddWithValue("$suppressFolderDates", search.SuppressFolderDates ? 1 : 0);
                 command.Parameters.AddWithValue("$saved", DateTime.UtcNow.Ticks);
                 command.ExecuteNonQuery();
                 command.CommandText = "SELECT last_insert_rowid();";
@@ -240,6 +251,10 @@ public sealed class HistoryStore
                         date_to_ticks = $dateTo,
                         exact_match = $exactMatch,
                         search_contents = $searchContents,
+                        required_terms_json = $requiredTerms,
+                        any_terms_json = $anyTerms,
+                        excluded_terms_json = $excludedTerms,
+                        suppress_folder_dates = $suppressFolderDates,
                         saved_at = $saved
                     WHERE id = $id AND machine_id = $machine AND user_id = $user;
                     """;
@@ -256,6 +271,10 @@ public sealed class HistoryStore
                 command.Parameters.AddWithValue("$dateTo", search.DateTo?.Ticks ?? 0L);
                 command.Parameters.AddWithValue("$exactMatch", search.ExactMatch ? 1 : 0);
                 command.Parameters.AddWithValue("$searchContents", search.SearchContents ? 1 : 0);
+                command.Parameters.AddWithValue("$requiredTerms", JsonSerializer.Serialize(search.RequiredTerms ?? []));
+                command.Parameters.AddWithValue("$anyTerms", JsonSerializer.Serialize(search.AnyTerms ?? []));
+                command.Parameters.AddWithValue("$excludedTerms", JsonSerializer.Serialize(search.ExcludedTerms ?? []));
+                command.Parameters.AddWithValue("$suppressFolderDates", search.SuppressFolderDates ? 1 : 0);
                 command.Parameters.AddWithValue("$saved", DateTime.UtcNow.Ticks);
                 return command.ExecuteNonQuery() == 1;
             }
@@ -634,6 +653,10 @@ public sealed class HistoryStore
               date_to_ticks INTEGER NOT NULL DEFAULT 0,
               exact_match INTEGER NOT NULL DEFAULT 0,
               search_contents INTEGER NOT NULL DEFAULT 0,
+              required_terms_json TEXT NOT NULL DEFAULT '[]',
+              any_terms_json TEXT NOT NULL DEFAULT '[]',
+              excluded_terms_json TEXT NOT NULL DEFAULT '[]',
+              suppress_folder_dates INTEGER NOT NULL DEFAULT 0,
               saved_at INTEGER NOT NULL
             );
             """;
@@ -648,6 +671,10 @@ public sealed class HistoryStore
         EnsureColumn(connection, "saved_searches", "date_to_ticks", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "saved_searches", "exact_match", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "saved_searches", "search_contents", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "saved_searches", "required_terms_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "saved_searches", "any_terms_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "saved_searches", "excluded_terms_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "saved_searches", "suppress_folder_dates", "INTEGER NOT NULL DEFAULT 0");
         MigrateSavedSearchQueryIdentity(connection);
         _initialized = true;
         return connection;

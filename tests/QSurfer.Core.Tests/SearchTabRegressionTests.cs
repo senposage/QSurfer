@@ -142,6 +142,24 @@ public sealed class SearchTabRegressionTests
     }
 
     [Fact]
+    public void SuppressingFolderDatesKeepsFoldersAlphabeticalBeforeDatedFiles()
+    {
+        using var tab = CreateTab();
+        tab.AddResults(
+        [
+            new SearchResult { Name = "Zulu", IsFolder = true, Path = @"Shared\Zulu", Modified = "2026-09-12" },
+            new SearchResult { Name = "Alpha", IsFolder = true, Path = @"Shared\Alpha", Modified = "2020-01-01" },
+            new SearchResult { Name = "Old", Extension = "pdf", Path = @"Shared\Old.pdf", Modified = "2024-01-01" },
+            new SearchResult { Name = "New", Extension = "pdf", Path = @"Shared\New.pdf", Modified = "2025-01-01" },
+        ]);
+
+        tab.ApplySortSpecification("recent:desc");
+        tab.SuppressFolderDates = true;
+
+        Assert.Equal(["Alpha", "Zulu", "New.pdf", "Old.pdf"], tab.Results.Select(result => result.FileName));
+    }
+
+    [Fact]
     public void TiedRecentResultsUsePathAsAStableFinalTieBreaker()
     {
         using var tab = CreateTab();

@@ -127,7 +127,7 @@ public sealed class CompositeSearchProviderTests
 
         public bool CanSearchScope(SearchProviderScope scope) => acceptsScope;
 
-        public Task<IReadOnlyList<SearchResult>> SearchAsync(string query, FileTypeFilter typeFilter, int limit, int offset, string? sortBy, string sortDirection, Func<IReadOnlyList<SearchResult>, Task>? batchReceived, CancellationToken cancellationToken, SearchProviderScope? scope = null)
+        public Task<IReadOnlyList<SearchResult>> SearchAsync(string query, FileTypeFilter typeFilter, int limit, int offset, string? sortBy, string sortDirection, Func<IReadOnlyList<SearchResult>, Task>? batchReceived, CancellationToken cancellationToken, SearchProviderScope? scope = null, SearchProviderQueryOptions? options = null)
         {
             SearchRequests++;
             SearchOffsets.Add(offset);
