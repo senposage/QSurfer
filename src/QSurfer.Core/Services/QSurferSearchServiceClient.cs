@@ -82,7 +82,8 @@ public sealed class QSurferSearchServiceClient : ISearchProvider
         string sortDirection,
         Func<IReadOnlyList<SearchResult>, Task>? batchReceived,
         CancellationToken cancellationToken,
-        SearchProviderScope? scope = null)
+        SearchProviderScope? scope = null,
+        SearchProviderQueryOptions? options = null)
     {
         ThrowIfRecentlyUnavailable();
         var (searchText, modifiedAfter, modifiedBefore, metadataOnly) = ParseLegacyQuery(query);
@@ -104,12 +105,25 @@ public sealed class QSurferSearchServiceClient : ISearchProvider
                 ModifiedAfter = modifiedAfter,
                 ModifiedBefore = modifiedBefore,
                 ScopeAliases = BuildScopeAliases(),
-                // Qsirch receives name:"..." when Search contents is off. Keep
-                // QIndexer on the same filename-only contract; its broader fields
-                // are reserved for an explicit content search.
-                MatchFields = metadataOnly
-                    ? ["name"]
-                    : ["name", "path", "extension", "content"],
+                // Ordinary content searches mirror Qsirch's broad bare-query behavior.
+                // Structured Boolean content searches are intentionally content-only:
+                // allowing name or path would make folders match their own labels.
+                MatchFields = options?.SearchContents == true && options.HasBooleanTerms
+                    ? ["content"]
+                    : options?.SearchContents == true || !metadataOnly
+                        ? ["name", "path", "extension", "content"]
+                        : ["name"],
+                MatchMode = options?.ExactMatch == true
+                    ? "exact"
+                    : "prefix",
+                Boolean = options?.HasBooleanTerms == true
+                    ? new SearchServiceBooleanFilter
+                    {
+                        All = options.RequiredTerms ?? [],
+                        Any = options.AnyTerms ?? [],
+                        Not = options.ExcludedTerms ?? [],
+                    }
+                    : null,
             },
         };
 
@@ -467,8 +481,23 @@ public sealed class QSurferSearchServiceClient : ISearchProvider
         public string? ModifiedBefore { get; init; }
         [JsonPropertyName("match_fields")]
         public IReadOnlyList<string> MatchFields { get; init; } = [];
+        [JsonPropertyName("match_mode")]
+        public string MatchMode { get; init; } = "prefix";
+        [JsonPropertyName("boolean")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public SearchServiceBooleanFilter? Boolean { get; init; }
         [JsonPropertyName("scope_aliases")]
         public IReadOnlyList<SearchServiceScopeAlias> ScopeAliases { get; init; } = [];
+    }
+
+    private sealed class SearchServiceBooleanFilter
+    {
+        [JsonPropertyName("all")]
+        public IReadOnlyList<string> All { get; init; } = [];
+        [JsonPropertyName("any")]
+        public IReadOnlyList<string> Any { get; init; } = [];
+        [JsonPropertyName("not")]
+        public IReadOnlyList<string> Not { get; init; } = [];
     }
 
     private sealed class SearchServiceResponse

@@ -43,7 +43,8 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         string sortDirection,
         Func<IReadOnlyList<SearchResult>, Task>? batchReceived,
         CancellationToken cancellationToken,
-        SearchProviderScope? scope = null)
+        SearchProviderScope? scope = null,
+        SearchProviderQueryOptions? options = null)
     {
         var requested = Math.Max(1, offset + limit);
         var providers = ProvidersForScope(scope);
@@ -52,7 +53,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
             throw new InvalidOperationException("No configured search provider indexes the selected folders.");
         }
         var searches = await Task.WhenAll(providers.Select(provider => LoadCachedWindowAsync(
-            provider, query, typeFilter, requested, sortBy, sortDirection, cancellationToken, scope, offset == 0)));
+            provider, query, typeFilter, requested, sortBy, sortDirection, cancellationToken, scope, options, offset == 0)));
         var successful = searches.Where(search => search.Error == null).ToList();
         if (successful.Count == 0)
         {
@@ -193,9 +194,10 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         string sortDirection,
         CancellationToken cancellationToken,
         SearchProviderScope? scope,
+        SearchProviderQueryOptions? options,
         bool refresh)
     {
-        var cache = GetSearchCache(provider, query, typeFilter, sortBy, sortDirection, scope, refresh);
+        var cache = GetSearchCache(provider, query, typeFilter, sortBy, sortDirection, scope, options, refresh);
         if (cache.Failure != null)
         {
             return new ProviderResult(provider.ProviderName, [], cache.Failure);
@@ -223,7 +225,8 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
                         sortDirection,
                         null,
                         cancellationToken,
-                        scope);
+                        scope,
+                        options);
                     cache.Results.AddRange(page);
                     if (page.Count < pageSize)
                     {
@@ -252,6 +255,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         string? sortBy,
         string sortDirection,
         SearchProviderScope? scope,
+        SearchProviderQueryOptions? options,
         bool refresh)
     {
         var key = new SearchCacheKey(
@@ -265,7 +269,12 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
             sortBy ?? "",
             sortDirection,
             string.Join('|', scope?.IncludePaths ?? []),
-            string.Join('|', scope?.ExcludePaths ?? []));
+            string.Join('|', scope?.ExcludePaths ?? []),
+            options?.ExactMatch ?? false,
+            options?.SearchContents ?? false,
+            string.Join('|', options?.RequiredTerms ?? []),
+            string.Join('|', options?.AnyTerms ?? []),
+            string.Join('|', options?.ExcludedTerms ?? []));
 
         lock (_searchCacheLock)
         {
@@ -330,5 +339,10 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         string SortBy,
         string SortDirection,
         string IncludePaths,
-        string ExcludePaths);
+        string ExcludePaths,
+        bool ExactMatch,
+        bool SearchContents,
+        string RequiredTerms,
+        string AnyTerms,
+        string ExcludedTerms);
 }

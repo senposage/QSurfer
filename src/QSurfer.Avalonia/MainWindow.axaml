@@ -248,12 +248,13 @@
                       <Grid x:Name="FilterControlsGrid"
                             Grid.Row="1"
                             RowDefinitions="Auto,Auto,Auto"
-                            ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+                            ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
                             RowSpacing="8"
                             ColumnSpacing="8">
-                        <CheckBox x:Name="ExactMatchFilter" Grid.Row="0" Grid.Column="0" Content="Exact match" IsChecked="{Binding ExactMatch}" ToolTip.Tip="Match whole words in names. For example, pie will not also match Pierce." />
-                        <CheckBox x:Name="SearchContentsFilter" Grid.Row="0" Grid.Column="1" Content="Search contents" IsChecked="{Binding SearchContents}" ToolTip.Tip="Also search indexed text inside documents. This is broader and may return files whose names do not match." />
-                        <ToggleButton x:Name="TypeFilterToggle" Grid.Row="0" Grid.Column="2" Content="{Binding TypeFilterSummary}" Width="140" IsChecked="{Binding IsTypeFilterOpen}" ToolTip.Tip="Filter by one or more file types" />
+                        <CheckBox x:Name="ExactMatchFilter" Grid.Row="0" Grid.Column="0" Content="Exact match" IsChecked="{Binding ExactMatch}" ToolTip.Tip="Match complete words or phrases. For example, pie will not also match Pierce. QIndexer also applies this to indexed document text when Search contents is on." />
+                        <CheckBox x:Name="SearchContentsFilter" Grid.Row="0" Grid.Column="1" Content="Search contents" IsChecked="{Binding SearchContents}" ToolTip.Tip="Also search indexed text inside documents. This is broader and may return files whose names do not match. Combine it with Exact match to find an exact indexed phrase." />
+                        <ToggleButton x:Name="BooleanFilterToggle" Grid.Row="0" Grid.Column="2" Content="Boolean" Classes="panel-action" IsChecked="{Binding IsBooleanFilterOpen}" IsEnabled="{Binding DataContext.IsSearchServiceConfigured, RelativeSource={RelativeSource AncestorType=Window}}" ToolTip.Tip="Available when QIndexer is enabled and configured. Refine QIndexer results with required, optional, or excluded phrases. Qsirch continues to receive the normal search text." />
+                        <ToggleButton x:Name="TypeFilterToggle" Grid.Row="0" Grid.Column="3" Content="{Binding TypeFilterSummary}" Width="140" IsChecked="{Binding IsTypeFilterOpen}" ToolTip.Tip="Filter by one or more file types" />
                         <Popup IsOpen="{Binding IsTypeFilterOpen, Mode=TwoWay}"
                                Placement="Bottom"
                                PlacementTarget="{Binding #TypeFilterToggle}"
@@ -278,30 +279,47 @@
                             </StackPanel>
                           </Border>
                         </Popup>
-                        <ComboBox x:Name="DatePresetFilter" Grid.Row="0" Grid.Column="3" Width="116" ItemsSource="{Binding DatePresets}" SelectedItem="{Binding SelectedDatePreset}" ToolTip.Tip="Choose a common date range. You can still change From and To afterward." />
-                        <TextBlock x:Name="FromFilterLabel" Grid.Row="0" Grid.Column="4" Text="From" Classes="field-label" VerticalAlignment="Center" />
-                        <CalendarDatePicker x:Name="DateFromFilter" Grid.Row="0" Grid.Column="5" Width="116"
+                        <ComboBox x:Name="DatePresetFilter" Grid.Row="0" Grid.Column="4" Width="116" ItemsSource="{Binding DatePresets}" SelectedItem="{Binding SelectedDatePreset}" ToolTip.Tip="Choose a common date range. You can still change From and To afterward." />
+                        <TextBlock x:Name="FromFilterLabel" Grid.Row="0" Grid.Column="5" Text="From" Classes="field-label" VerticalAlignment="Center" />
+                        <CalendarDatePicker x:Name="DateFromFilter" Grid.Row="0" Grid.Column="6" Width="116"
                                             SelectedDate="{Binding DateFrom, Mode=TwoWay}"
                                             DisplayDateStart="{Binding MinimumSearchDate}"
                                             DisplayDateEnd="{Binding Today}"
                                             Watermark="Any date"
                                             ToolTip.Tip="Keep blank to allow any earlier date. Future dates are not allowed." />
-                        <TextBlock x:Name="ToFilterLabel" Grid.Row="0" Grid.Column="6" Text="To" Classes="field-label" VerticalAlignment="Center" />
-                        <CalendarDatePicker x:Name="DateToFilter" Grid.Row="0" Grid.Column="7" Width="116"
+                        <TextBlock x:Name="ToFilterLabel" Grid.Row="0" Grid.Column="7" Text="To" Classes="field-label" VerticalAlignment="Center" />
+                        <CalendarDatePicker x:Name="DateToFilter" Grid.Row="0" Grid.Column="8" Width="116"
                                             SelectedDate="{Binding DateTo, Mode=TwoWay}"
                                             DisplayDateStart="{Binding MinimumSearchDate}"
                                             DisplayDateEnd="{Binding Today}"
                                             Watermark="Today"
                                             ToolTip.Tip="Keep blank to allow any later date up to today. Future dates are not allowed." />
-                        <Button x:Name="ClearFiltersButton" Grid.Row="0" Grid.Column="8" Content="Clear filters" Classes="panel-action" Command="{Binding ClearFiltersCommand}" ToolTip.Tip="Reset file type, dates, exact match, content search, and folder scope. Keeps your query and results." />
+                        <Button x:Name="ClearFiltersButton" Grid.Row="0" Grid.Column="9" Content="Clear filters" Classes="panel-action" Command="{Binding ClearFiltersCommand}" ToolTip.Tip="Reset file type, dates, exact match, content search, and folder scope. Keeps your query and results." />
                         <TextBlock x:Name="ScopeFilterLabel" Grid.Row="1" Grid.Column="0" Text="Scope" Classes="field-label" VerticalAlignment="Center" />
                         <ComboBox x:Name="ScopeFilter" Grid.Row="1" Grid.Column="1" Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" ToolTip.Tip="Choose all folders, or use folder selections from Navigation to limit the active search." />
                         <TextBlock x:Name="ArrangeFilterLabel" Grid.Row="1" Grid.Column="2" Text="Arrange" Classes="field-label" VerticalAlignment="Center" />
                         <ComboBox x:Name="ArrangeFilter" Grid.Row="1" Grid.Column="3" Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode, Mode=TwoWay}" SelectionChanged="ArrangeFilter_SelectionChanged" ToolTip.Tip="Change the order of the current results without running the search again." />
-                        <TextBlock x:Name="ViewFilterLabel" Grid.Row="1" Grid.Column="4" Text="View" Classes="field-label" VerticalAlignment="Center" />
-                        <ComboBox x:Name="ViewFilter" Grid.Row="1" Grid.Column="5" Width="130" ItemsSource="{Binding ViewModes}" SelectedItem="{Binding SelectedViewMode}" ToolTip.Tip="Change how the same results look. Details is best for comparing columns." />
-                        <Button x:Name="LoadMoreButton" Grid.Row="1" Grid.Column="6" Content="Load more" Classes="panel-action" Command="{Binding LoadMoreCommand}" ToolTip.Tip="Ask the NAS for more matches from this same search." />
-                        <Border x:Name="ScopeIndicator" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="9" Classes="scope-indicator" IsVisible="{Binding HasFolderScope}" ToolTip.Tip="{Binding ScopeSummary}">
+                        <CheckBox x:Name="SuppressFolderDatesFilter" Grid.Row="1" Grid.Column="4" Content="Suppress folder dates" IsChecked="{Binding SuppressFolderDates}" ToolTip.Tip="For Recentness and Date modified, keep folders alphabetical so their indexed dates do not push them ahead of files." />
+                        <TextBlock x:Name="ViewFilterLabel" Grid.Row="1" Grid.Column="5" Text="View" Classes="field-label" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ViewFilter" Grid.Row="1" Grid.Column="6" Width="130" ItemsSource="{Binding ViewModes}" SelectedItem="{Binding SelectedViewMode}" ToolTip.Tip="Change how the same results look. Details is best for comparing columns." />
+                        <Button x:Name="LoadMoreButton" Grid.Row="1" Grid.Column="7" Content="Load more" Classes="panel-action" Command="{Binding LoadMoreCommand}" ToolTip.Tip="Ask the NAS for more matches from this same search." />
+                        <Popup IsOpen="{Binding IsBooleanFilterOpen, Mode=TwoWay}"
+                               Placement="Bottom"
+                               PlacementTarget="{Binding #BooleanFilterToggle}"
+                               HorizontalOffset="-180"
+                               IsLightDismissEnabled="True"
+                               OverlayDismissEventPassThrough="True">
+                          <Border Classes="side-pane" Width="360" Padding="12">
+                            <StackPanel Spacing="9">
+                              <TextBlock Text="QIndexer Boolean filters" Classes="panel-title" />
+                              <TextBlock Text="Separate phrases with commas or new lines. Spaces inside a phrase are preserved. Qsirch still receives only the normal search box text." Classes="field-label" TextWrapping="Wrap" />
+                              <TextBox Watermark="Required: every phrase must match" Text="{Binding RequiredTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                              <TextBox Watermark="Any: at least one phrase must match" Text="{Binding AnyTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                              <TextBox Watermark="Exclude: omit matching phrases" Text="{Binding ExcludedTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                            </StackPanel>
+                          </Border>
+                        </Popup>
+                        <Border x:Name="ScopeIndicator" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="10" Classes="scope-indicator" IsVisible="{Binding HasFolderScope}" ToolTip.Tip="{Binding ScopeSummary}">
                           <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
                             <TextBlock Text="Search folders:" FontWeight="SemiBold" VerticalAlignment="Top" />
                             <ScrollViewer Grid.Column="1"

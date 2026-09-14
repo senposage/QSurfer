@@ -51,6 +51,67 @@ public sealed class SearchProviderConfigTests
     }
 
     [Fact]
+    public async Task QIndexerUsesExistingExactAndContentFiltersWithoutChangingTheQsirchQuery()
+    {
+        var handler = new RecordingHandler();
+        using var client = new QSurferSearchServiceClient(new AppConfig
+        {
+            SearchService = new SearchServiceConnection { Host = "127.0.0.1", Port = 41973, Token = "test-token" },
+        }, handler);
+
+        await client.SearchAsync(
+            "name:\"settlement agreement\"",
+            new FileTypeFilter { Name = "All types", IncludeAllFiles = true },
+            10,
+            0,
+            "relevance",
+            "desc",
+            null,
+            CancellationToken.None,
+            options: new SearchProviderQueryOptions(ExactMatch: true, SearchContents: true));
+
+        var filters = JsonDocument.Parse(handler.RequestBody!).RootElement.GetProperty("filters");
+        Assert.Equal("exact", filters.GetProperty("match_mode").GetString());
+        Assert.Equal(["name", "path", "extension", "content"], filters.GetProperty("match_fields")
+            .EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal("settlement agreement", JsonDocument.Parse(handler.RequestBody!).RootElement.GetProperty("query").GetString());
+    }
+
+    [Fact]
+    public async Task QIndexerSendsStructuredBooleanTermsWithoutSplittingPhrases()
+    {
+        var handler = new RecordingHandler();
+        using var client = new QSurferSearchServiceClient(new AppConfig
+        {
+            SearchService = new SearchServiceConnection { Host = "127.0.0.1", Port = 41973, Token = "test-token" },
+        }, handler);
+
+        await client.SearchAsync(
+            "agreement",
+            new FileTypeFilter { Name = "All types", IncludeAllFiles = true },
+            10,
+            0,
+            "relevance",
+            "desc",
+            null,
+            CancellationToken.None,
+            options: new SearchProviderQueryOptions(
+                ExactMatch: false,
+                SearchContents: true,
+                RequiredTerms: ["settlement agreement"],
+                AnyTerms: ["amended agreement", "renewal"],
+                ExcludedTerms: ["draft copy"]));
+
+        var boolean = JsonDocument.Parse(handler.RequestBody!).RootElement.GetProperty("filters").GetProperty("boolean");
+        var fields = JsonDocument.Parse(handler.RequestBody!).RootElement.GetProperty("filters").GetProperty("match_fields")
+            .EnumerateArray().Select(value => value.GetString()).ToList();
+        Assert.Equal(["content"], fields);
+        Assert.Equal(["settlement agreement"], boolean.GetProperty("all").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(["amended agreement", "renewal"], boolean.GetProperty("any").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(["draft copy"], boolean.GetProperty("not").EnumerateArray().Select(value => value.GetString()));
+    }
+
+    [Fact]
     public void NasAndSearchServiceConnectionsSurviveMachineConfigurationFlow()
     {
         var config = new AppConfig
@@ -221,6 +282,20 @@ public sealed class SearchProviderConfigTests
             .EnumerateArray()
             .Select(value => value.GetString());
         Assert.Equal(["content"], fields);
+    }
+
+    [Fact]
+    public void QsirchNasPathInNameFieldUsesOnlyItsLeafName()
+    {
+        using var document = JsonDocument.Parse("""
+            {"name":"\\Shared\\AA CRIMINAL\\Active\\Brief.docx","extension":"docx","path":"\\Shared\\AA CRIMINAL\\Active\\Brief.docx","type":"File"}
+            """);
+
+        var result = QsirchClient.ResultFromJson(document.RootElement);
+
+        Assert.Equal("Brief.docx", result.Name);
+        Assert.Equal("Brief.docx", result.FileName);
+        Assert.Equal(@"\Shared\AA CRIMINAL\Active\Brief.docx", result.Path);
     }
 
     private sealed class RecordingHandler : HttpMessageHandler

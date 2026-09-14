@@ -370,10 +370,14 @@ public sealed record SavedSearch(
     DateTime? DateFrom,
     DateTime? DateTo,
     bool ExactMatch,
-    bool SearchContents)
+    bool SearchContents,
+    IReadOnlyList<string>? RequiredTerms = null,
+    IReadOnlyList<string>? AnyTerms = null,
+    IReadOnlyList<string>? ExcludedTerms = null,
+    bool SuppressFolderDates = false)
 {
     public SavedSearch(long id, string name, string query)
-        : this(id, name, query, [], [], [], "details", "recent:desc", null, DateTime.Today, false, false)
+        : this(id, name, query, [], [], [], "details", "recent:desc", null, DateTime.Today, false, false, [], [], [])
     {
     }
 }

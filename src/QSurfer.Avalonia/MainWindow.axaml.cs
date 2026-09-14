@@ -218,6 +218,7 @@ public sealed partial class MainWindow : Window
         {
             FindVisualControl<Control>("ExactMatchFilter"),
             FindVisualControl<Control>("SearchContentsFilter"),
+            FindVisualControl<Control>("BooleanFilterToggle"),
             FindVisualControl<Control>("TypeFilterToggle"),
             FindVisualControl<Control>("DatePresetFilter"),
             FindVisualControl<Control>("FromFilterLabel"),
@@ -229,6 +230,7 @@ public sealed partial class MainWindow : Window
             FindVisualControl<Control>("ScopeFilter"),
             FindVisualControl<Control>("ArrangeFilterLabel"),
             FindVisualControl<Control>("ArrangeFilter"),
+            FindVisualControl<Control>("SuppressFolderDatesFilter"),
             FindVisualControl<Control>("ViewFilterLabel"),
             FindVisualControl<Control>("ViewFilter"),
             FindVisualControl<Control>("LoadMoreButton"),
@@ -243,20 +245,22 @@ public sealed partial class MainWindow : Window
 
         var exactMatchFilter = controls[0]!;
         var searchContentsFilter = controls[1]!;
-        var typeFilterToggle = controls[2]!;
-        var datePresetFilter = controls[3]!;
-        var fromFilterLabel = controls[4]!;
-        var dateFromFilter = controls[5]!;
-        var toFilterLabel = controls[6]!;
-        var dateToFilter = controls[7]!;
-        var clearFiltersButton = controls[8]!;
-        var scopeFilterLabel = controls[9]!;
-        var scopeFilter = controls[10]!;
-        var arrangeFilterLabel = controls[11]!;
-        var arrangeFilter = controls[12]!;
-        var viewFilterLabel = controls[13]!;
-        var viewFilter = controls[14]!;
-        var loadMoreButton = controls[15]!;
+        var booleanFilterToggle = controls[2]!;
+        var typeFilterToggle = controls[3]!;
+        var datePresetFilter = controls[4]!;
+        var fromFilterLabel = controls[5]!;
+        var dateFromFilter = controls[6]!;
+        var toFilterLabel = controls[7]!;
+        var dateToFilter = controls[8]!;
+        var clearFiltersButton = controls[9]!;
+        var scopeFilterLabel = controls[10]!;
+        var scopeFilter = controls[11]!;
+        var arrangeFilterLabel = controls[12]!;
+        var arrangeFilter = controls[13]!;
+        var suppressFolderDatesFilter = controls[14]!;
+        var viewFilterLabel = controls[15]!;
+        var viewFilter = controls[16]!;
+        var loadMoreButton = controls[17]!;
         var scopeIndicator = FindVisualControl<Border>("ScopeIndicator");
 
         var isBrowsing = _viewModel.IsNavigationVisible;
@@ -295,7 +299,7 @@ public sealed partial class MainWindow : Window
         if (useWideFilterLayout)
         {
             SetGridRows(filterControlsGrid, GridLength.Auto, GridLength.Auto);
-            SetGridColumns(filterControlsGrid, Enumerable.Repeat(GridLength.Auto, 16).ToArray());
+            SetGridColumns(filterControlsGrid, Enumerable.Repeat(GridLength.Auto, 18).ToArray());
             filterControlsGrid.RowSpacing = 0;
             typeFilterToggle.Width = 152;
             datePresetFilter.Width = 130;
@@ -304,30 +308,32 @@ public sealed partial class MainWindow : Window
 
             SetGridPosition(exactMatchFilter, 0, 0);
             SetGridPosition(searchContentsFilter, 0, 1);
-            SetGridPosition(typeFilterToggle, 0, 2);
-            SetGridPosition(datePresetFilter, 0, 3);
-            SetGridPosition(fromFilterLabel, 0, 4);
-            SetGridPosition(dateFromFilter, 0, 5);
-            SetGridPosition(toFilterLabel, 0, 6);
-            SetGridPosition(dateToFilter, 0, 7);
-            SetGridPosition(clearFiltersButton, 0, 8);
-            SetGridPosition(scopeFilterLabel, 0, 9);
-            SetGridPosition(scopeFilter, 0, 10);
-            SetGridPosition(arrangeFilterLabel, 0, 11);
-            SetGridPosition(arrangeFilter, 0, 12);
-            SetGridPosition(viewFilterLabel, 0, 13);
-            SetGridPosition(viewFilter, 0, 14);
-            SetGridPosition(loadMoreButton, 0, 15);
+            SetGridPosition(booleanFilterToggle, 0, 2);
+            SetGridPosition(typeFilterToggle, 0, 3);
+            SetGridPosition(datePresetFilter, 0, 4);
+            SetGridPosition(fromFilterLabel, 0, 5);
+            SetGridPosition(dateFromFilter, 0, 6);
+            SetGridPosition(toFilterLabel, 0, 7);
+            SetGridPosition(dateToFilter, 0, 8);
+            SetGridPosition(clearFiltersButton, 0, 9);
+            SetGridPosition(scopeFilterLabel, 0, 10);
+            SetGridPosition(scopeFilter, 0, 11);
+            SetGridPosition(arrangeFilterLabel, 0, 12);
+            SetGridPosition(arrangeFilter, 0, 13);
+            SetGridPosition(suppressFolderDatesFilter, 0, 14);
+            SetGridPosition(viewFilterLabel, 0, 15);
+            SetGridPosition(viewFilter, 0, 16);
+            SetGridPosition(loadMoreButton, 0, 17);
             if (scopeIndicator != null)
             {
                 SetGridPosition(scopeIndicator, 1, 0);
-                Grid.SetColumnSpan(scopeIndicator, 16);
+                Grid.SetColumnSpan(scopeIndicator, 18);
             }
             return;
         }
 
         SetGridRows(filterControlsGrid, GridLength.Auto, GridLength.Auto, GridLength.Auto);
-        SetGridColumns(filterControlsGrid, Enumerable.Repeat(GridLength.Auto, 9).ToArray());
+        SetGridColumns(filterControlsGrid, Enumerable.Repeat(GridLength.Auto, 10).ToArray());
         filterControlsGrid.RowSpacing = 8;
         typeFilterToggle.Width = 140;
         datePresetFilter.Width = 116;
@@ -336,24 +342,26 @@ public sealed partial class MainWindow : Window
 
         SetGridPosition(exactMatchFilter, 0, 0);
         SetGridPosition(searchContentsFilter, 0, 1);
-        SetGridPosition(typeFilterToggle, 0, 2);
-        SetGridPosition(datePresetFilter, 0, 3);
-        SetGridPosition(fromFilterLabel, 0, 4);
-        SetGridPosition(dateFromFilter, 0, 5);
-        SetGridPosition(toFilterLabel, 0, 6);
-        SetGridPosition(dateToFilter, 0, 7);
-        SetGridPosition(clearFiltersButton, 0, 8);
+        SetGridPosition(booleanFilterToggle, 0, 2);
+        SetGridPosition(typeFilterToggle, 0, 3);
+        SetGridPosition(datePresetFilter, 0, 4);
+        SetGridPosition(fromFilterLabel, 0, 5);
+        SetGridPosition(dateFromFilter, 0, 6);
+        SetGridPosition(toFilterLabel, 0, 7);
+        SetGridPosition(dateToFilter, 0, 8);
+        SetGridPosition(clearFiltersButton, 0, 9);
         SetGridPosition(scopeFilterLabel, 1, 0);
         SetGridPosition(scopeFilter, 1, 1);
         SetGridPosition(arrangeFilterLabel, 1, 2);
         SetGridPosition(arrangeFilter, 1, 3);
-        SetGridPosition(viewFilterLabel, 1, 4);
-        SetGridPosition(viewFilter, 1, 5);
-        SetGridPosition(loadMoreButton, 1, 6);
+        SetGridPosition(suppressFolderDatesFilter, 1, 4);
+        SetGridPosition(viewFilterLabel, 1, 5);
+        SetGridPosition(viewFilter, 1, 6);
+        SetGridPosition(loadMoreButton, 1, 7);
         if (scopeIndicator != null)
         {
             SetGridPosition(scopeIndicator, 2, 0);
-            Grid.SetColumnSpan(scopeIndicator, 9);
+            Grid.SetColumnSpan(scopeIndicator, 10);
         }
     }
 
