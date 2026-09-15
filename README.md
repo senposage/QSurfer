@@ -1,4 +1,4 @@
-# QSurfer
+# QSurfer (Query Surfer) 
 
 QSurfer is an Explorer-style desktop search and browser for indexed shared
 storage. It can query Qsirch, QIndexer, or both at once; opening and browsing
