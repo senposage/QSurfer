@@ -6,6 +6,7 @@ namespace QSurfer.Avalonia;
 public sealed partial class WhatsNewWindow : Window
 {
     private readonly string _version;
+    private readonly Control[] _allPages;
     private readonly Control[] _pages;
     private readonly bool _isUpdate;
     private int _pageIndex;
@@ -15,6 +16,7 @@ public sealed partial class WhatsNewWindow : Window
         InitializeComponent();
         _version = version;
         _isUpdate = isUpdate;
+        _allPages = [WelcomePage, ConnectionPage, SearchPage, BrowsePage, RecoveryPage, UpdatePage];
         _pages = isUpdate
             ? [UpdatePage]
             : [WelcomePage, ConnectionPage, SearchPage, BrowsePage, RecoveryPage];
@@ -49,10 +51,12 @@ public sealed partial class WhatsNewWindow : Window
 
     private void ShowPage()
     {
-        for (var index = 0; index < _pages.Length; index++)
+        foreach (var page in _allPages)
         {
-            _pages[index].IsVisible = index == _pageIndex;
+            page.IsVisible = false;
         }
+
+        _pages[_pageIndex].IsVisible = true;
 
         HeadingText.Text = _isUpdate
             ? $"What's new in QSurfer {_version}"
