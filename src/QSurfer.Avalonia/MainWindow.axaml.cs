@@ -2837,7 +2837,8 @@ public sealed partial class MainWindow : Window
 
     private void FavoritePointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        _favoriteContextClick = e.GetCurrentPoint(sender as Visual).Properties.IsRightButtonPressed;
+        var point = e.GetCurrentPoint(sender as Visual);
+        _favoriteContextClick = point.Properties.IsRightButtonPressed;
         var node = FavoriteNodeFromSource(e.Source);
         if (node == null)
         {
@@ -2845,7 +2846,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_favoriteContextClick)
+        if (_favoriteContextClick || point.Properties.IsLeftButtonPressed)
         {
             _viewModel.SelectedFavoriteNode = node;
         }

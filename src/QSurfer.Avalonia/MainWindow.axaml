@@ -417,12 +417,17 @@
                             <Style Selector="TreeViewItem">
                               <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                               <Setter Property="HorizontalAlignment" Value="Stretch" />
+                              <Setter Property="Background" Value="Transparent" />
                             </Style>
                             <Style Selector="TreeViewItem:pointerover">
                               <Setter Property="Background" Value="Transparent" />
                             </Style>
                             <Style Selector="TreeViewItem /template/ Border#PART_Header:pointerover">
                               <Setter Property="Background" Value="{DynamicResource QSurfer.HoverBackground}" />
+                            </Style>
+                            <Style Selector="TreeViewItem /template/ Border#PART_Header">
+                              <Setter Property="HorizontalAlignment" Value="Stretch" />
+                              <Setter Property="Background" Value="Transparent" />
                             </Style>
                           </TreeView.Styles>
                           <TreeView.ContextMenu>
@@ -439,7 +444,9 @@
                           </TreeView.ContextMenu>
                           <TreeView.ItemTemplate>
                             <TreeDataTemplate ItemsSource="{Binding Children}">
-                              <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ToolTip}" />
+                              <Grid HorizontalAlignment="Stretch" Background="Transparent">
+                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ToolTip}" />
+                              </Grid>
                             </TreeDataTemplate>
                           </TreeView.ItemTemplate>
                         </TreeView>
