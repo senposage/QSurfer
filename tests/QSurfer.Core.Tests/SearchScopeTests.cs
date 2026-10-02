@@ -14,7 +14,7 @@ public sealed class SearchScopeTests
         tab.ToggleScopeFolder(@"\Shared\AA Criminal");
         tab.ToggleScopeFolder(@"\Shared\AA Criminal\Closed");
 
-        Assert.Equal("folder", tab.SelectedScope.Key);
+        Assert.Equal("selected", tab.SelectedScope.Key);
         Assert.Equal([@"Shared\AA Criminal"], tab.ScopePaths);
         Assert.Equal([@"Shared\AA Criminal\Closed"], tab.ExcludedScopePaths);
     }

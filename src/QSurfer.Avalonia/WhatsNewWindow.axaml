@@ -29,20 +29,27 @@
       <StackPanel x:Name="SearchPage" IsVisible="False" Spacing="14">
         <TextBlock Text="Find the right result" Classes="help-topic-title" />
         <TextBlock Text="Enter a name in the search box and press Enter. Leave Search contents off when you want names and paths; turn it on when you need text inside indexed documents. Exact match narrows name searches to whole words." TextWrapping="Wrap" Classes="help-copy" />
-        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Narrow before a broad search gets noisy" FontWeight="SemiBold" /><TextBlock Text="Use file types, date controls, arrangement, and view mode to focus results. Search in one or more folders with Shift+Click in Navigation. Shift+Alt+Click excludes a folder, even when the rest of the search stays broad. Both gestures can be changed in Settings." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
-        <TextBlock Text="Favorites save files and folders. Saved searches remember the query, filters, view, sort order, and selected or excluded folders, then open in their own tab." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Narrow before a broad search gets noisy" FontWeight="SemiBold" /><TextBlock Text="Use file types, date controls, arrangement, and view mode to focus results. Shift+Click a Navigation folder to include it. Shift+Alt+Click excludes a folder, even when the rest of the search stays broad. The scope list shows included folders in accent color and excluded ones in gray; use each switch to change its role. QSurfer refreshes the search when you change that list so newly included folders can return their results." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Favorites save files and folders. Saved and recent searches restore the complete search state: words, filters, view, sort order, dates, Boolean terms, and selected or excluded folders. They open in their own tab." TextWrapping="Wrap" Classes="help-copy" />
       </StackPanel>
       <StackPanel x:Name="BrowsePage" IsVisible="False" Spacing="14">
         <TextBlock Text="Browse like a file manager" Classes="help-topic-title" />
         <TextBlock Text="Use Navigation, the address field, or a folder result to open a folder. Back, Forward, Up, and Refresh behave like Explorer. Double-click a file to open it in its normal application." TextWrapping="Wrap" Classes="help-copy" />
         <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="One workspace, not two modes" FontWeight="SemiBold" /><TextBlock Text="A tab keeps its search while you inspect folders. Click the search field or search glyph to return to it; click the folder glyph or address field to return to browsing. Right-click an item for familiar file operations and Properties." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
-        <TextBlock Text="Mapped drives are preferred where present. Path mappings explain how the NAS path returned by search connects to the drive or mounted share that opens the file." TextWrapping="Wrap" Classes="help-copy" />
+        <TextBlock Text="Mapped drives are preferred where present. If Windows reconnects a mapped drive after QSurfer starts, Navigation updates to use it automatically. Path mappings explain how the NAS path returned by search connects to the drive or mounted share that opens the file." TextWrapping="Wrap" Classes="help-copy" />
       </StackPanel>
       <StackPanel x:Name="RecoveryPage" IsVisible="False" Spacing="14">
         <TextBlock Text="Preview and recover safely" Classes="help-topic-title" />
         <TextBlock Text="Select an item to load its preview when a supported handler is available. You can keep searching or browsing while the preview initializes." TextWrapping="Wrap" Classes="help-copy" />
         <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Deleted or older files" FontWeight="SemiBold" /><TextBlock Text="NAS Recycle Bin entries can be restored to their original location. Version history opens snapshot copies when the NAS exposes them. Recover copy writes a separate copy; Restore original always confirms before replacing a live item and preserves the current item as a QSurfer safety copy." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
         <TextBlock Text="You are ready. Open Help anytime for the complete guide to settings, recovery policy, file operations, shortcuts, and troubleshooting." TextWrapping="Wrap" Classes="help-copy" />
+      </StackPanel>
+      <StackPanel x:Name="UpdatePage" IsVisible="False" Spacing="14">
+        <TextBlock Text="Scope folders now stay in sync" Classes="help-topic-title" />
+        <TextBlock Text="The folder list below a search now clearly marks included folders in accent color and excluded folders in gray. Each row shows its own matching count, and changing a row automatically refreshes the search so newly included folders can return results." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Search state follows the search" FontWeight="SemiBold" /><TextBlock Text="Recent searches now restore the full search exactly as it ran: filters, dates, Boolean terms, arrangement, view, and included or excluded folders. They open in their own tab rather than inheriting the tab you were using." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Tabs now reliably return to their own Search or Browse view when you switch between them. On Windows, Navigation also notices when a mapped drive finishes reconnecting after QSurfer starts and updates the UNC entry to its drive view." TextWrapping="Wrap" Classes="help-copy" />
+        <TextBlock Text="Open Help anytime for the full reference." TextWrapping="Wrap" Classes="help-copy" />
       </StackPanel>
     </Grid>
 

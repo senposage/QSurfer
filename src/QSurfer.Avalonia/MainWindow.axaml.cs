@@ -163,16 +163,23 @@ public sealed partial class MainWindow : Window
         }
 
         var version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "1.0";
-        if (string.Equals(_viewModel.Config.Behavior.LastSeenFirstRunGuideVersion, version, StringComparison.Ordinal))
+        var behavior = _viewModel.Config.Behavior;
+        var isFirstRun = string.IsNullOrWhiteSpace(behavior.LastSeenFirstRunGuideVersion);
+        var hasSeenThisUpdate = string.Equals(behavior.LastSeenWhatsNewVersion, version, StringComparison.Ordinal);
+        if (!isFirstRun && hasSeenThisUpdate)
         {
             return;
         }
 
-        var dialog = new WhatsNewWindow(version);
+        var dialog = new WhatsNewWindow(version, isUpdate: !isFirstRun);
         dialog.Opened += (_, _) => Dispatcher.UIThread.Post(dialog.Activate, DispatcherPriority.Background);
         dialog.Closed += (_, _) =>
         {
-            _viewModel.Config.Behavior.LastSeenFirstRunGuideVersion = version;
+            if (isFirstRun)
+            {
+                behavior.LastSeenFirstRunGuideVersion = version;
+            }
+            behavior.LastSeenWhatsNewVersion = version;
             ConfigStore.Save(_viewModel.Config);
         };
 
@@ -396,16 +403,6 @@ public sealed partial class MainWindow : Window
     {
         _exitRequested = true;
         Close();
-    }
-
-    private async void SearchTabKeyDown(object? sender, KeyEventArgs e)
-    {
-        if (sender is Control { DataContext: SearchTabViewModel tab } &&
-            e.Key == Key.Enter && tab.SearchCommand.CanExecute(null))
-        {
-            await tab.SearchCommand.ExecuteAsync();
-            e.Handled = true;
-        }
     }
 
     private async void MainWindow_KeyDown(object? sender, KeyEventArgs e)
@@ -794,11 +791,11 @@ public sealed partial class MainWindow : Window
 
     private async void RecentSearchSelected(object? sender, SelectionChangedEventArgs e)
     {
-        if (sender is not ListBox { SelectedItem: string query })
+        if (sender is not ListBox { SelectedItem: RecentSearch recentSearch })
         {
             return;
         }
-        await _viewModel.RunRecentSearchAsync(query);
+        await _viewModel.RunRecentSearchAsync(recentSearch);
         if (sender is ListBox list)
         {
             list.SelectedItem = null;
@@ -1307,14 +1304,14 @@ public sealed partial class MainWindow : Window
         var point = e.GetCurrentPoint(sender as Visual);
         if (!_popupRecentSearchPrimaryPressed ||
             point.Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonReleased ||
-            sender is not ListBox { SelectedItem: string query } list)
+            sender is not ListBox { SelectedItem: RecentSearch recentSearch } list)
         {
             return;
         }
 
         _popupRecentSearchPrimaryPressed = false;
-        await _viewModel.RunRecentSearchAsync(query);
         list.SelectedItem = null;
+        await _viewModel.RunRecentSearchAsync(recentSearch);
     }
 
     private async void SidebarRecentSearchPointerReleased(object? sender, PointerReleasedEventArgs e)
@@ -1322,21 +1319,21 @@ public sealed partial class MainWindow : Window
         var point = e.GetCurrentPoint(sender as Visual);
         if (!_sidebarRecentSearchPrimaryPressed ||
             point.Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonReleased ||
-            sender is not ListBox { SelectedItem: string query } list)
+            sender is not ListBox { SelectedItem: RecentSearch recentSearch } list)
         {
             return;
         }
 
         _sidebarRecentSearchPrimaryPressed = false;
-        await _viewModel.RunRecentSearchAsync(query);
         list.SelectedItem = null;
+        await _viewModel.RunRecentSearchAsync(recentSearch);
     }
 
     private async void RemoveRecentSearch_Click(object? sender, RoutedEventArgs e)
     {
-        if (sender is MenuItem { Tag: string query })
+        if (sender is MenuItem { Tag: RecentSearch recentSearch })
         {
-            await _viewModel.RemoveRecentSearchAsync(query);
+            await _viewModel.RemoveRecentSearchAsync(recentSearch);
         }
     }
 
@@ -1363,7 +1360,11 @@ public sealed partial class MainWindow : Window
     {
         if (sender is Control { DataContext: SearchTabViewModel tab })
         {
-            Dispatcher.UIThread.Post(tab.ClearScopeFolder, DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(async () =>
+            {
+                tab.ClearScopeFolder();
+                await _viewModel.RefreshSearchAfterScopeChangeAsync(tab);
+            }, DispatcherPriority.Background);
         }
     }
 
@@ -1377,7 +1378,11 @@ public sealed partial class MainWindow : Window
             var tab = _viewModel.SelectedSearchTab;
             if (tab != null)
             {
-                Dispatcher.UIThread.Post(() => tab.RemoveScopeEntry(entry), DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(async () =>
+                {
+                    tab.RemoveScopeEntry(entry);
+                    await _viewModel.RefreshSearchAfterScopeChangeAsync(tab);
+                }, DispatcherPriority.Background);
             }
         }
     }
@@ -1389,7 +1394,11 @@ public sealed partial class MainWindow : Window
             var tab = _viewModel.SelectedSearchTab;
             if (tab != null)
             {
-                Dispatcher.UIThread.Post(() => tab.SetScopeEntryIncluded(entry, included), DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(async () =>
+                {
+                    tab.SetScopeEntryIncluded(entry, included);
+                    await _viewModel.RefreshSearchAfterScopeChangeAsync(tab);
+                }, DispatcherPriority.Background);
             }
         }
     }
@@ -1852,9 +1861,10 @@ public sealed partial class MainWindow : Window
 
     private async void FavoriteDoubleTapped(object? sender, TappedEventArgs e)
     {
-        if (_viewModel.OpenFavoriteCommand.CanExecute(null))
+        var node = FavoriteNodeFromSource(e.Source) ?? _viewModel.SelectedFavoriteNode;
+        if (node != null)
         {
-            await _viewModel.OpenFavoriteCommand.ExecuteAsync();
+            await _viewModel.OpenFavoriteNodeAsync(node);
         }
     }
 
@@ -2361,6 +2371,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // The drag affordance captures the pointer below. Select first rather than
+        // relying on ListBox's later pointer-release selection path, otherwise a
+        // quick tab switch can leave the previous tab's browse surface visible.
+        _viewModel.SelectedSearchTab = tab;
         _tabDragCandidate = tab;
         _tabDragStart = e.GetPosition(this);
         _tabDragPressedAtUtc = DateTime.UtcNow;
@@ -2824,10 +2838,10 @@ public sealed partial class MainWindow : Window
     private void FavoritePointerPressed(object? sender, PointerPressedEventArgs e)
     {
         _favoriteContextClick = e.GetCurrentPoint(sender as Visual).Properties.IsRightButtonPressed;
-        if (e.Source is not Control { DataContext: FavoriteTreeNode node })
+        var node = FavoriteNodeFromSource(e.Source);
+        if (node == null)
         {
             _viewModel.SelectedFavoriteNode = null;
-            e.Handled = true;
             return;
         }
 
@@ -2838,6 +2852,22 @@ public sealed partial class MainWindow : Window
     }
 
     private void FavoritePointerReleased(object? sender, PointerReleasedEventArgs e) => _favoriteContextClick = false;
+
+    private static FavoriteTreeNode? FavoriteNodeFromSource(object? source)
+    {
+        if (source is StyledElement { DataContext: FavoriteTreeNode node })
+        {
+            return node;
+        }
+
+        return source is Visual visual
+            ? visual.GetVisualAncestors()
+                .OfType<StyledElement>()
+                .Select(element => element.DataContext)
+                .OfType<FavoriteTreeNode>()
+                .FirstOrDefault()
+            : null;
+    }
 
     private void ResultContextMenu_Opened(object? sender, RoutedEventArgs e)
     {

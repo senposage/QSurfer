@@ -221,7 +221,8 @@ internal static class DemoCatalog
     {
         foreach (var query in new[] { "lease", "client", "court", "board meeting" })
         {
-            history.RecordSearch(query);
+            history.RecordSearch(new RecentSearch(
+                query, [], [], [], "details", "recent:desc", null, DateTime.Today, false, false));
         }
 
         var existingNames = history.SavedSearches()

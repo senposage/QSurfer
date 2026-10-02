@@ -99,7 +99,8 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         SearchScopes =
         [
             new SearchScope { Name = "All folders", Key = "all" },
-            new SearchScope { Name = "This folder", Key = "folder" },
+            new SearchScope { Name = "This folder", Key = "current" },
+            new SearchScope { Name = "Selected folders", Key = "selected" },
         ];
         var today = DateTime.Today;
         var weekStart = today.AddDays(-((int)today.DayOfWeek + 6) % 7);
@@ -197,7 +198,15 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
                 : $"{included}{Environment.NewLine}Excluding:{Environment.NewLine}{string.Join(Environment.NewLine, _excludedScopePaths.Select(CompactScopeDisplayPath))}";
         }
     }
-    public bool HasFolderScope => SelectedScope.Key == "folder" && (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0);
+    public bool HasFolderScope =>
+        !SelectedScope.Key.Equals("all", StringComparison.OrdinalIgnoreCase) &&
+        (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0);
+    public bool IsCurrentFolderScope =>
+        SelectedScope.Key.Equals("current", StringComparison.OrdinalIgnoreCase) &&
+        (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0);
+    public bool IsSelectedFoldersScope =>
+        SelectedScope.Key.Equals("selected", StringComparison.OrdinalIgnoreCase) &&
+        (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0);
     public long? SavedSearchId => _savedSearchId;
     public string SavedSearchName => _savedSearchName;
     public bool HasSavedSearchSource => _savedSearchId.HasValue;
@@ -221,7 +230,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         // A normal folder selection replaces the entire scope definition.
         // Explicit exclusions are retained only for multi-folder scope editing.
         _excludedScopePaths.Clear();
-        SetScopeFolders([path]);
+        SetScopeFolders([path], "current");
     }
 
     public void BeginScopeAppend()
@@ -267,7 +276,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _scopePaths.Add(normalized);
-        SelectedScope = SearchScopes[1];
+        SetSelectedScope("selected");
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -278,7 +287,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    public void SetScopeFolders(IEnumerable<string> paths)
+    public void SetScopeFolders(IEnumerable<string> paths, string? scopeKey = null)
     {
         var normalized = paths
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -289,7 +298,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         _scopePaths.Clear();
         _scopePaths.AddRange(normalized);
         IsScopeAppendPending = false;
-        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        SetSelectedScope(scopeKey ?? InferScopeKey());
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -318,9 +327,10 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase));
         IsScopeAppendPending = false;
-        SelectedScope = (_scopePaths.Count > 0 || _excludedScopePaths.Count > 0) && scopeKey.Equals("folder", StringComparison.OrdinalIgnoreCase)
-            ? SearchScopes[1]
-            : SearchScopes.First(scope => scope.Key.Equals(scopeKey, StringComparison.OrdinalIgnoreCase));
+        var normalizedScopeKey = scopeKey.Equals("folder", StringComparison.OrdinalIgnoreCase)
+            ? InferScopeKey()
+            : scopeKey;
+        SetSelectedScope(normalizedScopeKey);
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -362,7 +372,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             _scopePaths.Add(normalized);
         }
 
-        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        SetSelectedScope("selected");
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -391,7 +401,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             _excludedScopePaths.Add(normalized);
         }
 
-        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        SetSelectedScope("selected");
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -419,7 +429,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             _excludedScopePaths.RemoveAll(path => IsPathWithinScope(path, normalized));
         }
 
-        SelectedScope = _scopePaths.Count > 0 || _excludedScopePaths.Count > 0 ? SearchScopes[1] : SearchScopes[0];
+        SetSelectedScope("selected");
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -460,7 +470,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             _excludedScopePaths.Add(normalized);
         }
 
-        SelectedScope = SearchScopes[1];
+        SetSelectedScope("selected");
         OnPropertyChanged(nameof(ScopePath));
         OnPropertyChanged(nameof(ScopePaths));
         OnPropertyChanged(nameof(ExcludedScopePaths));
@@ -496,6 +506,22 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         _excludedScopePaths.Clear();
         SetScopeFolders([]);
     }
+
+    private void SetSelectedScope(string key)
+    {
+        var effectiveKey = (_scopePaths.Count == 0 && _excludedScopePaths.Count == 0)
+            ? "all"
+            : key;
+        SelectedScope = SearchScopes.First(scope => scope.Key.Equals(effectiveKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string InferScopeKey() =>
+        _scopePaths.Count == 0 && _excludedScopePaths.Count == 0
+            ? "all"
+            : _scopePaths.Count == 1 && _excludedScopePaths.Count == 0
+                ? "current"
+                : "selected";
+
     public string SortSpecification => string.Join(',', _sortRules.Select(rule => $"{rule.Key}:{(rule.Descending ? "desc" : "asc")}"));
     public string PrimarySortKey => _sortRules.FirstOrDefault()?.Key ?? _selectedSortMode.Key;
 
@@ -712,6 +738,8 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             {
                 ApplyFilters();
                 OnPropertyChanged(nameof(HasFolderScope));
+                OnPropertyChanged(nameof(IsCurrentFolderScope));
+                OnPropertyChanged(nameof(IsSelectedFoldersScope));
             }
         }
     }
@@ -1069,6 +1097,16 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
 
     private bool MatchesFilters(SearchResult result)
     {
+        if (!MatchesNonScopeFilters(result))
+        {
+            return false;
+        }
+
+        return !HasFolderScope || MatchesFolderScope(result);
+    }
+
+    private bool MatchesNonScopeFilters(SearchResult result)
+    {
         var selectedTypes = TypeFilterOptions.Where(option => option.IsSelected).Select(option => option.Filter).ToList();
         if (selectedTypes.Count > 0 && !selectedTypes.Any(filter => MatchesType(result, filter)))
         {
@@ -1083,10 +1121,6 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             return false;
         }
         if (!result.IsFolder && HasDateRange && result.ModifiedDate == null)
-        {
-            return false;
-        }
-        if (HasFolderScope && !MatchesFolderScope(result))
         {
             return false;
         }
@@ -1149,7 +1183,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     private int CountResultsWithinScope(string scopePath) =>
         _allResults.Count(result =>
             IsResultWithinAnyScope(result, [scopePath]) &&
-            MatchesFilters(result));
+            MatchesNonScopeFilters(result));
 
     private static IEnumerable<string> ResultPathCandidates(SearchResult result)
     {

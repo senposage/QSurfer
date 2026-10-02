@@ -55,6 +55,7 @@ Folder scope is attached to an individual search tab.
 - Use the **+** beside the scope list to add another path from the address picker. Select a suggestion, then add another path if needed.
 - Use the switch beside a listed path to make that branch included or excluded. Use its **-** button to remove it.
 - Choose **Clear** to remove both included and excluded folders from the current tab.
+- Changing a scope row automatically refreshes the active search. This ensures a newly included folder can return results that were not requested while it was excluded.
 
 The active scope is shown below the filters: included folders use the accent color and excluded folders use neutral gray. A more-specific included child stays included even when one of its parents is excluded. The defaults can be changed in **Settings > Shortcut > Navigation scope gestures**.
 
@@ -78,7 +79,7 @@ Favorites, recent searches, saved searches, and pinned tabs are personal to the 
 
 - Use the result star or context menu to favorite a file or folder.
 - Save a recurring search from its tab.
-- Saved searches remember the query, types, dates, exact/content settings, view, sort order, and included or excluded folder scope.
+- Saved and recent searches remember the query, types, dates, exact/content settings, Boolean terms, view, sort order, and included or excluded folder scope. Opening either recreates that search in its own tab instead of inheriting the active tab's filters.
 - The save glyph on a saved-search tab updates it immediately. A new search asks for a name; an existing name cannot silently overwrite another saved search.
 - Opening a saved search opens it in a new QSurfer tab.
 - Pinned tabs reopen after QSurfer starts and rerun after the window has settled.

@@ -62,6 +62,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private bool _isLoadingNasNavigation;
     private string _nasNavigationStatus = "NAS navigation is waiting for a connection.";
     private readonly DispatcherTimer _nasNavigationRetryTimer;
+    private string _windowsDriveMappingSignature = "";
     private CancellationTokenSource? _addressSuggestionCancellation;
     private readonly Dictionary<string, AddressDirectorySearchCacheEntry> _addressDirectorySearchCache = new(StringComparer.Ordinal);
     private bool _isAddressSuggestionsOpen;
@@ -103,7 +104,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         ];
 
         _browserItems.CollectionChanged += BrowserItemsCollectionChanged;
-        _nasNavigationRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        // Windows can restore persistent mapped drives after the app itself has
+        // started. Polling is deliberately light and only rebuilds navigation when
+        // the mapping set actually changes.
+        _nasNavigationRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _nasNavigationRetryTimer.Tick += NasNavigationRetryTimer_Tick;
         NewSearchTabCommand = new AsyncCommand(NewSearchTabAsync);
         BrowseCommand = new AsyncCommand(BrowseAtLocationAsync, () => !string.IsNullOrWhiteSpace(BrowserLocation));
@@ -176,7 +180,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<BrowserBreadcrumb> BrowserBreadcrumbs { get; } = [];
     public ObservableCollection<FavoriteTreeNode> FavoriteTree { get; } = [];
     public bool HasFavorites => FavoriteTree.Count > 0;
-    public ObservableCollection<string> RecentSearches { get; } = [];
+    public ObservableCollection<RecentSearch> RecentSearches { get; } = [];
     public bool HasRecentSearches => RecentSearches.Count > 0;
     public AsyncCommand NewSearchTabCommand { get; }
     public AsyncCommand BrowseCommand { get; }
@@ -462,6 +466,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             }
             AppLogger.Info("browse", $"navigation requested folder=\"{node.FullPath}\" resolved=\"{resolvedPath}\"");
 
+            ClearFolderScopeForNavigation();
+
             // A tree node can be opened by clicking its label without expanding its
             // disclosure arrow. Populate it here as well, so share-root affordances
             // such as the NAS Recycle Bin are never skipped.
@@ -492,6 +498,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
+        ClearFolderScopeForNavigation();
         IsNavigationVisible = true;
         BrowserLocation = breadcrumb.FullPath;
         await BrowseAsync();
@@ -803,6 +810,23 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         await tab.SearchCommand.ExecuteAsync();
     }
 
+    public async Task RefreshSearchAfterScopeChangeAsync(SearchTabViewModel tab)
+    {
+        if (string.IsNullOrWhiteSpace(tab.Query))
+        {
+            return;
+        }
+
+        // Provider-side scopes determine which records arrive at all. Restart so a
+        // newly included folder can return records that an earlier exclusion omitted.
+        tab.CancelSearch();
+        tab.IsSearching = false;
+        if (tab.SearchCommand.CanExecute(null))
+        {
+            await tab.SearchCommand.ExecuteAsync();
+        }
+    }
+
     public IReadOnlyList<BrowserItem> SelectedNavigationScopeItems()
     {
         var scopes = (SelectedSearchTab?.ScopePaths ?? [])
@@ -849,20 +873,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        if (setSearchScope && SelectedSearchTab is { } tab &&
-            (!tab.HasFolderScope || tab.IsScopeAppendPending))
+        var scopeChanged = false;
+        if (setSearchScope && SelectedSearchTab is { } tab)
         {
             var scopePath = ResolveScopePath(address);
             AppLogger.Info("browse", $"address scope address=\"{address}\" resolved=\"{scopePath ?? ""}\"");
             if (!string.IsNullOrWhiteSpace(scopePath))
             {
-                tab.ApplyAddressScope(scopePath);
+                scopeChanged = tab.ApplyAddressScope(scopePath);
             }
         }
 
         DismissAddressSuggestions();
         IsNavigationVisible = true;
         await BrowseAsync();
+        if (scopeChanged && SelectedSearchTab is { } scopedTab && !string.IsNullOrWhiteSpace(scopedTab.Query))
+        {
+            await scopedTab.SearchCommand.ExecuteAsync();
+        }
     }
 
     public void BeginFolderScopeAppend()
@@ -894,6 +922,17 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         return Path.IsPathFullyQualified(localPath) || IsUncPath(localPath)
             ? localPath
             : _mapper.TryResolveNasSearchPath(path);
+    }
+
+    private void ClearFolderScopeForNavigation()
+    {
+        if (SelectedSearchTab is not { IsCurrentFolderScope: true } tab)
+        {
+            return;
+        }
+
+        tab.ClearScopeFolder();
+        SyncNavigationScopeSelection(tab);
     }
 
     private void SetAddressSuggestions(IEnumerable<BrowserPathSuggestion> suggestions)
@@ -1200,11 +1239,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     public void SetNativePreviewHost(object? host) => NativePreviewHost = host;
 
-    public async Task RunRecentSearchAsync(string query)
+    public async Task RunRecentSearchAsync(RecentSearch recentSearch)
     {
-        var tab = SelectedSearchTab ?? AddSearchTab();
+        SelectedSearchTab?.CancelSearch();
+        var tab = AddSearchTab();
         SelectedSearchTab = tab;
-        tab.Query = query;
+        tab.Query = recentSearch.Query;
+        tab.ApplyTypeSelection(recentSearch.TypeNames);
+        tab.SelectedViewMode = tab.ViewModes.FirstOrDefault(view => view.Key.Equals(recentSearch.ViewKey, StringComparison.OrdinalIgnoreCase)) ?? tab.SelectedViewMode;
+        tab.ApplySortSpecification(recentSearch.SortValue);
+        tab.DateFrom = recentSearch.DateFrom;
+        tab.DateTo = recentSearch.DateTo;
+        tab.ExactMatch = recentSearch.ExactMatch;
+        tab.SearchContents = recentSearch.SearchContents;
+        tab.SuppressFolderDates = recentSearch.SuppressFolderDates;
+        tab.RestoreBooleanTerms(recentSearch.RequiredTerms, recentSearch.AnyTerms, recentSearch.ExcludedTerms);
+        tab.RestoreScope("folder", null, recentSearch.ScopePaths, recentSearch.ExcludedScopePaths);
         IsRecentSearchesOpen = false;
         if (tab.SearchCommand.CanExecute(null))
         {
@@ -1504,7 +1554,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         var token = tab.SearchCancellation.Token;
         var version = ++tab.SearchVersion;
 
-        _ = RecordRecentSearchAsync(query);
+        _ = RecordRecentSearchAsync(tab, query);
 
         tab.ResetResults();
         tab.IsSearching = true;
@@ -1688,7 +1738,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 tab.SetScopeFolder(scope);
             }
 
-            await RecordRecentSearchAsync(query);
+            await RecordRecentSearchAsync(tab, query);
             tab.ResetResults();
             tab.IsSearching = true;
             SetTabStatus(tab, "Searching demo archive...");
@@ -1928,9 +1978,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         });
     }
 
-    private async Task RecordRecentSearchAsync(string query)
+    private async Task RecordRecentSearchAsync(SearchTabViewModel tab, string query)
     {
-        await Task.Run(() => _history.RecordSearch(query));
+        var recentSearch = new RecentSearch(
+            query,
+            tab.ScopePaths.ToList(),
+            tab.ExcludedScopePaths.ToList(),
+            tab.TypeFilterOptions.Where(option => option.IsSelected).Select(option => option.Name).ToList(),
+            tab.SelectedViewMode.Key,
+            tab.SortSpecification,
+            tab.DateFrom,
+            tab.DateTo,
+            tab.ExactMatch,
+            tab.SearchContents,
+            tab.RequiredTermList,
+            tab.AnyTermList,
+            tab.ExcludedTermList,
+            tab.SuppressFolderDates);
+        await Task.Run(() => _history.RecordSearch(recentSearch));
         await RefreshRecentSearchesAsync();
     }
 
@@ -1938,6 +2003,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     {
         if (SelectedFavoriteNode?.SavedSearch is { } savedSearch)
         {
+            // A saved search supersedes the active search in the current workspace.
+            // Letting the old request run keeps its network work alive after the user has moved on.
+            SelectedSearchTab?.CancelSearch();
             var tab = AddSearchTab();
             SelectedSearchTab = tab;
             tab.SetSavedSearchSource(savedSearch.Id, savedSearch.Name);
@@ -2676,9 +2744,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         tab.AnyTermList,
         tab.ExcludedTermList);
 
-    public async Task RemoveRecentSearchAsync(string query)
+    public async Task RemoveRecentSearchAsync(RecentSearch recentSearch)
     {
-        await Task.Run(() => _history.DeleteRecentSearch(query));
+        await Task.Run(() => _history.DeleteRecentSearch(recentSearch.Query));
         await RefreshRecentSearchesAsync();
         IsRecentSearchesOpen = false;
     }
@@ -2767,6 +2835,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             SetPreview(result);
         }
+        if (ReferenceEquals(tab, SelectedSearchTab) && e.PropertyName == nameof(SearchTabViewModel.SelectedScope))
+        {
+            _ = ApplyScopeSelectionAsync(tab);
+        }
         if (ReferenceEquals(tab, SelectedSearchTab) &&
             e.PropertyName is nameof(SearchTabViewModel.ScopePath) or
                 nameof(SearchTabViewModel.ScopePaths) or
@@ -2775,11 +2847,23 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             SyncNavigationScopeSelection(tab);
         }
         if (e.PropertyName == nameof(SearchTabViewModel.Query) &&
-            string.IsNullOrWhiteSpace(tab.Query) &&
-            _config.Behavior.ClearResultsWithQuery &&
-            !tab.IsPinned)
+            string.IsNullOrWhiteSpace(tab.Query))
         {
-            _ = ClearSearchTabAsync(tab);
+            if (tab.IsSearching)
+            {
+                // Clearing the field means the active request no longer has a
+                // query to represent. Keep the already-painted results unless
+                // the user's separate clear-results preference says otherwise.
+                tab.CancelSearch();
+                tab.SearchVersion++;
+                tab.IsSearching = false;
+                SetTabStatus(tab, "Search stopped; results retained.");
+            }
+
+            if (_config.Behavior.ClearResultsWithQuery && !tab.IsPinned)
+            {
+                _ = ClearSearchTabAsync(tab);
+            }
         }
         if ((e.PropertyName is nameof(SearchTabViewModel.SearchContents) or nameof(SearchTabViewModel.ExactMatch)) &&
             !string.IsNullOrWhiteSpace(tab.Query) &&
@@ -2812,6 +2896,91 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private async Task ApplyScopeSelectionAsync(SearchTabViewModel tab)
+    {
+        if (tab.SelectedScope.Key.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tab.ScopePaths.Count == 0 && tab.ExcludedScopePaths.Count == 0)
+            {
+                return;
+            }
+
+            tab.ClearScopeFolder();
+            SyncNavigationScopeSelection(tab);
+            if (!string.IsNullOrWhiteSpace(tab.Query))
+            {
+                await tab.SearchCommand.ExecuteAsync();
+            }
+            return;
+        }
+
+        if (tab.SelectedScope.Key.Equals("selected", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tab.HasFolderScope)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(BrowserLocation) || IsHomeLocation(BrowserLocation))
+            {
+                tab.SelectedScope = tab.SearchScopes.First(scope => scope.Key.Equals("all", StringComparison.OrdinalIgnoreCase));
+                SetTabStatus(tab, "Browse to a folder before selecting Selected folders.");
+                return;
+            }
+
+            var selectedPath = ResolveScopePath(BrowserLocation);
+            if (string.IsNullOrWhiteSpace(selectedPath))
+            {
+                tab.SelectedScope = tab.SearchScopes.First(scope => scope.Key.Equals("all", StringComparison.OrdinalIgnoreCase));
+                SetTabStatus(tab, "This location cannot be used as a search folder.");
+                return;
+            }
+
+            tab.SetScopeFolders([selectedPath], "selected");
+            SyncNavigationScopeSelection(tab);
+            if (!string.IsNullOrWhiteSpace(tab.Query))
+            {
+                await tab.SearchCommand.ExecuteAsync();
+            }
+            return;
+        }
+
+        if (!tab.SelectedScope.Key.Equals("current", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        // Current-folder scopes are set programmatically after an accepted
+        // address. Only replace them when the user has switched here from a
+        // different scope mode or selected it with no existing scope.
+        if (tab.IsCurrentFolderScope)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(BrowserLocation) || IsHomeLocation(BrowserLocation))
+        {
+            tab.SelectedScope = tab.SearchScopes.First(scope => scope.Key.Equals("all", StringComparison.OrdinalIgnoreCase));
+            SetTabStatus(tab, "Browse to a folder before selecting This folder.");
+            return;
+        }
+
+        var scopePath = ResolveScopePath(BrowserLocation);
+        if (string.IsNullOrWhiteSpace(scopePath))
+        {
+            tab.SelectedScope = tab.SearchScopes.First(scope => scope.Key.Equals("all", StringComparison.OrdinalIgnoreCase));
+            SetTabStatus(tab, "This location cannot be used as a search folder.");
+            return;
+        }
+
+        tab.SetScopeFolder(scopePath);
+        SyncNavigationScopeSelection(tab);
+        if (!string.IsNullOrWhiteSpace(tab.Query))
+        {
+            await tab.SearchCommand.ExecuteAsync();
+        }
+    }
+
     private void SetPreview(SearchResult? result)
     {
         if (result == null)
@@ -2839,6 +3008,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
+        ClearFolderScopeForNavigation();
         BrowserLocation = parent;
         await BrowseAsync();
     }
@@ -2852,6 +3022,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _browserHistoryIndex = targetIndex;
+        ClearFolderScopeForNavigation();
         BrowserLocation = _browserHistory[_browserHistoryIndex];
         UpdateNavigationHistoryCommands();
         await BrowseAsync(addToHistory: false);
@@ -2974,6 +3145,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task BrowseAtLocationAsync()
     {
+        ClearFolderScopeForNavigation();
         IsNavigationVisible = true;
         await BrowseAsync();
     }
@@ -2993,6 +3165,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
 
         IsNavigationVisible = true;
+        ClearFolderScopeForNavigation();
         BrowserLocation = HomeNavigationPath;
         browserTab.SetBrowseLocation(BrowserLocation);
         IsAddressNavigationPending = false;
@@ -3268,6 +3441,23 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private async void NasNavigationRetryTimer_Tick(object? sender, EventArgs e)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            PathMapper.RefreshWindowsDriveMappings();
+            var signature = string.Join(
+                "|",
+                PathMapper.DiscoverWindowsDriveMappings()
+                    .Select(mapping => $"{mapping.DriveRoot}>{mapping.NetworkPath}")
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+            if (!signature.Equals(_windowsDriveMappingSignature, StringComparison.OrdinalIgnoreCase))
+            {
+                _windowsDriveMappingSignature = signature;
+                RefreshNavigationRoots();
+                await LoadNasNavigationRootAsync();
+                return;
+            }
+        }
+
         if (!IsNasNavigationOnline)
         {
             await LoadNasNavigationRootAsync();
@@ -3997,6 +4187,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
         if (item.IsFolder)
         {
+            ClearFolderScopeForNavigation();
             BrowserLocation = item.FullPath;
             await BrowseAsync();
             return;

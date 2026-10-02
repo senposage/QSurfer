@@ -40,7 +40,7 @@ public sealed class HistoryStore
             });
     }
 
-    public IReadOnlyList<string> RecentSearches(int limit = 12)
+    public IReadOnlyList<RecentSearch> RecentSearches(int limit = 12)
     {
         lock (_gate)
         {
@@ -48,25 +48,36 @@ public sealed class HistoryStore
             {
                 using var connection = Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = "SELECT query FROM recent_searches WHERE machine_id = $machine AND user_id = $user ORDER BY used_at DESC LIMIT $limit;";
+                command.CommandText = """
+                    SELECT query, scope_paths_json, excluded_scope_paths_json, type_names_json,
+                           view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents,
+                           required_terms_json, any_terms_json, excluded_terms_json, suppress_folder_dates
+                    FROM recent_searches
+                    WHERE machine_id = $machine AND user_id = $user
+                    ORDER BY used_at DESC LIMIT $limit;
+                    """;
                 BindScope(command);
                 var requestedLimit = Math.Clamp(limit, 1, 50);
-                command.Parameters.AddWithValue("$limit", Math.Min(requestedLimit * 4, 50));
+                command.Parameters.AddWithValue("$limit", requestedLimit);
                 using var reader = command.ExecuteReader();
-                var results = new List<string>();
+                var results = new List<RecentSearch>();
                 while (reader.Read())
                 {
-                    var query = reader.GetString(0);
-                    if (results.Contains(query, StringComparer.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    results.Add(query);
-                    if (results.Count == requestedLimit)
-                    {
-                        break;
-                    }
+                    results.Add(new RecentSearch(
+                        reader.GetString(0),
+                        ParseGroups(reader.IsDBNull(1) ? null : reader.GetString(1)),
+                        ParseGroups(reader.IsDBNull(2) ? null : reader.GetString(2)),
+                        ParseGroups(reader.IsDBNull(3) ? null : reader.GetString(3)),
+                        reader.IsDBNull(4) ? "details" : reader.GetString(4),
+                        reader.IsDBNull(5) ? "recent:desc" : reader.GetString(5),
+                        ReadTicks(reader, 6),
+                        ReadTicks(reader, 7) ?? DateTime.Today,
+                        !reader.IsDBNull(8) && reader.GetInt64(8) != 0,
+                        !reader.IsDBNull(9) && reader.GetInt64(9) != 0,
+                        ParseGroups(reader.IsDBNull(10) ? null : reader.GetString(10)),
+                        ParseGroups(reader.IsDBNull(11) ? null : reader.GetString(11)),
+                        ParseGroups(reader.IsDBNull(12) ? null : reader.GetString(12)),
+                        !reader.IsDBNull(13) && reader.GetInt64(13) != 0));
                 }
                 return results;
             }
@@ -78,9 +89,9 @@ public sealed class HistoryStore
         }
     }
 
-    public void RecordSearch(string query)
+    public void RecordSearch(RecentSearch search)
     {
-        var text = query.Trim();
+        var text = search.Query.Trim();
         if (string.IsNullOrWhiteSpace(text))
         {
             return;
@@ -96,7 +107,29 @@ public sealed class HistoryStore
                 command.CommandText = "DELETE FROM recent_searches WHERE machine_id = $machine AND user_id = $user AND query = $query COLLATE NOCASE;";
                 command.ExecuteNonQuery();
 
-                command.CommandText = "INSERT INTO recent_searches (machine_id, user_id, query, used_at) VALUES ($machine, $user, $query, $used);";
+                command.CommandText = """
+                    INSERT INTO recent_searches (
+                      machine_id, user_id, query, scope_paths_json, excluded_scope_paths_json, type_names_json,
+                      view_key, sort_value, date_from_ticks, date_to_ticks, exact_match, search_contents,
+                      required_terms_json, any_terms_json, excluded_terms_json, suppress_folder_dates, used_at)
+                    VALUES (
+                      $machine, $user, $query, $scopePaths, $excludedScopePaths, $typeNames,
+                      $viewKey, $sortValue, $dateFrom, $dateTo, $exactMatch, $searchContents,
+                      $requiredTerms, $anyTerms, $excludedTerms, $suppressFolderDates, $used);
+                    """;
+                command.Parameters.AddWithValue("$scopePaths", JsonSerializer.Serialize(search.ScopePaths));
+                command.Parameters.AddWithValue("$excludedScopePaths", JsonSerializer.Serialize(search.ExcludedScopePaths));
+                command.Parameters.AddWithValue("$typeNames", JsonSerializer.Serialize(search.TypeNames));
+                command.Parameters.AddWithValue("$viewKey", search.ViewKey);
+                command.Parameters.AddWithValue("$sortValue", search.SortValue);
+                command.Parameters.AddWithValue("$dateFrom", search.DateFrom?.Ticks ?? 0L);
+                command.Parameters.AddWithValue("$dateTo", search.DateTo?.Ticks ?? 0L);
+                command.Parameters.AddWithValue("$exactMatch", search.ExactMatch ? 1 : 0);
+                command.Parameters.AddWithValue("$searchContents", search.SearchContents ? 1 : 0);
+                command.Parameters.AddWithValue("$requiredTerms", JsonSerializer.Serialize(search.RequiredTerms ?? []));
+                command.Parameters.AddWithValue("$anyTerms", JsonSerializer.Serialize(search.AnyTerms ?? []));
+                command.Parameters.AddWithValue("$excludedTerms", JsonSerializer.Serialize(search.ExcludedTerms ?? []));
+                command.Parameters.AddWithValue("$suppressFolderDates", search.SuppressFolderDates ? 1 : 0);
                 command.Parameters.AddWithValue("$used", DateTime.UtcNow.Ticks);
                 command.ExecuteNonQuery();
             }
@@ -635,6 +668,19 @@ public sealed class HistoryStore
               machine_id TEXT NOT NULL,
               user_id TEXT NOT NULL,
               query TEXT NOT NULL,
+              scope_paths_json TEXT NOT NULL DEFAULT '[]',
+              excluded_scope_paths_json TEXT NOT NULL DEFAULT '[]',
+              type_names_json TEXT NOT NULL DEFAULT '[]',
+              view_key TEXT NOT NULL DEFAULT 'details',
+              sort_value TEXT NOT NULL DEFAULT 'recent:desc',
+              date_from_ticks INTEGER NOT NULL DEFAULT 0,
+              date_to_ticks INTEGER NOT NULL DEFAULT 0,
+              exact_match INTEGER NOT NULL DEFAULT 0,
+              search_contents INTEGER NOT NULL DEFAULT 0,
+              required_terms_json TEXT NOT NULL DEFAULT '[]',
+              any_terms_json TEXT NOT NULL DEFAULT '[]',
+              excluded_terms_json TEXT NOT NULL DEFAULT '[]',
+              suppress_folder_dates INTEGER NOT NULL DEFAULT 0,
               used_at INTEGER NOT NULL,
               PRIMARY KEY (machine_id, user_id, query)
             );
@@ -662,6 +708,19 @@ public sealed class HistoryStore
             """;
         command.ExecuteNonQuery();
         EnsureColumn(connection, "history_results", "resolved_path", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(connection, "recent_searches", "scope_paths_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "recent_searches", "excluded_scope_paths_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "recent_searches", "type_names_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "recent_searches", "view_key", "TEXT NOT NULL DEFAULT 'details'");
+        EnsureColumn(connection, "recent_searches", "sort_value", "TEXT NOT NULL DEFAULT 'recent:desc'");
+        EnsureColumn(connection, "recent_searches", "date_from_ticks", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "recent_searches", "date_to_ticks", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "recent_searches", "exact_match", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "recent_searches", "search_contents", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "recent_searches", "required_terms_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "recent_searches", "any_terms_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "recent_searches", "excluded_terms_json", "TEXT NOT NULL DEFAULT '[]'");
+        EnsureColumn(connection, "recent_searches", "suppress_folder_dates", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "saved_searches", "scope_paths_json", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(connection, "saved_searches", "excluded_scope_paths_json", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(connection, "saved_searches", "type_names_json", "TEXT NOT NULL DEFAULT '[]'");

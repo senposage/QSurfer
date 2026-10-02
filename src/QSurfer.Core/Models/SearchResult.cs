@@ -382,6 +382,22 @@ public sealed record SavedSearch(
     }
 }
 
+public sealed record RecentSearch(
+    string Query,
+    IReadOnlyList<string> ScopePaths,
+    IReadOnlyList<string> ExcludedScopePaths,
+    IReadOnlyList<string> TypeNames,
+    string ViewKey,
+    string SortValue,
+    DateTime? DateFrom,
+    DateTime? DateTo,
+    bool ExactMatch,
+    bool SearchContents,
+    IReadOnlyList<string>? RequiredTerms = null,
+    IReadOnlyList<string>? AnyTerms = null,
+    IReadOnlyList<string>? ExcludedTerms = null,
+    bool SuppressFolderDates = false);
+
 public sealed record ExplorerResultGroup(string Key, string Name, string Location)
 {
     public override string ToString() => Name;

@@ -213,8 +213,7 @@
                                    MinWidth="180"
                                    Watermark="Search file and folder names"
                                    Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                                   GotFocus="SearchTabGotFocus"
-                                   KeyDown="SearchTabKeyDown" />
+                                   GotFocus="SearchTabGotFocus" />
                           <Button Grid.Column="1" x:Name="RecentSearchToggle" Content="&#x1F5D3;" Classes="toolbar-icon"
                                   Click="RecentSearchToggle_Click"
                                   ToolTip.Tip="Recent searches" />
@@ -230,7 +229,7 @@
                                      PointerReleased="PopupRecentSearchPointerReleased">
                               <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                  <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis">
+                                  <TextBlock Text="{Binding Query}" TextTrimming="CharacterEllipsis">
                                     <TextBlock.ContextMenu>
                                       <ContextMenu><MenuItem Header="Remove recent search" Tag="{Binding}" Click="RemoveRecentSearch_Click" /></ContextMenu>
                                     </TextBlock.ContextMenu>
@@ -296,7 +295,7 @@
                                             ToolTip.Tip="Keep blank to allow any later date up to today. Future dates are not allowed." />
                         <Button x:Name="ClearFiltersButton" Grid.Row="0" Grid.Column="9" Content="Clear filters" Classes="panel-action" Command="{Binding ClearFiltersCommand}" ToolTip.Tip="Reset file type, dates, exact match, content search, and folder scope. Keeps your query and results." />
                         <TextBlock x:Name="ScopeFilterLabel" Grid.Row="1" Grid.Column="0" Text="Scope" Classes="field-label" VerticalAlignment="Center" />
-                        <ComboBox x:Name="ScopeFilter" Grid.Row="1" Grid.Column="1" Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" ToolTip.Tip="Choose all folders, or use folder selections from Navigation to limit the active search." />
+                        <ComboBox x:Name="ScopeFilter" Grid.Row="1" Grid.Column="1" Width="132" ItemsSource="{Binding SearchScopes}" SelectedItem="{Binding SelectedScope}" ToolTip.Tip="All folders has no path filter. This folder searches the current Browse folder and its children. Selected folders keeps the explicit include and exclude list." />
                         <TextBlock x:Name="ArrangeFilterLabel" Grid.Row="1" Grid.Column="2" Text="Arrange" Classes="field-label" VerticalAlignment="Center" />
                         <ComboBox x:Name="ArrangeFilter" Grid.Row="1" Grid.Column="3" Width="140" ItemsSource="{Binding SortModes}" SelectedItem="{Binding SelectedSortMode, Mode=TwoWay}" SelectionChanged="ArrangeFilter_SelectionChanged" ToolTip.Tip="Change the order of the current results without running the search again." />
                         <CheckBox x:Name="SuppressFolderDatesFilter" Grid.Row="1" Grid.Column="4" Content="Suppress folder dates" IsChecked="{Binding SuppressFolderDates}" ToolTip.Tip="For Recentness and Date modified, keep folders alphabetical so their indexed dates do not push them ahead of files." />
@@ -417,6 +416,13 @@
                           <TreeView.Styles>
                             <Style Selector="TreeViewItem">
                               <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                              <Setter Property="HorizontalAlignment" Value="Stretch" />
+                            </Style>
+                            <Style Selector="TreeViewItem:pointerover">
+                              <Setter Property="Background" Value="Transparent" />
+                            </Style>
+                            <Style Selector="TreeViewItem /template/ Border#PART_Header:pointerover">
+                              <Setter Property="Background" Value="{DynamicResource QSurfer.HoverBackground}" />
                             </Style>
                           </TreeView.Styles>
                           <TreeView.ContextMenu>
@@ -461,7 +467,7 @@
                               </Setter>
                               <Setter Property="ContentTemplate">
                                 <DataTemplate>
-                                  <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" />
+                                  <TextBlock Text="{Binding Query}" TextTrimming="CharacterEllipsis" />
                                 </DataTemplate>
                               </Setter>
                             </Style>
