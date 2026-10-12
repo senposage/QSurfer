@@ -3,10 +3,6 @@
         x:Class="QSurfer.Avalonia.SettingsWindow"
         x:Name="SettingsRoot"
         Title="QSurfer settings"
-        Width="1080"
-        Height="820"
-        MinWidth="860"
-        MinHeight="640"
         WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel Spacing="4">
@@ -16,53 +12,75 @@
     </StackPanel>
 
     <TabControl Grid.Row="1" Margin="0,22,0,18">
-      <TabItem Header="Connection">
-        <ScrollViewer Margin="12">
-          <StackPanel Spacing="14">
-            <CheckBox x:Name="EnableQsirchBox" Content="Use Qsirch" Checked="QsirchEnabledChanged" Unchecked="QsirchEnabledChanged" Classes="panel-title" />
-            <Grid x:Name="QsirchSettingsPanel" ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="14" Margin="14,0,0,0">
-              <TextBlock Grid.Row="0" Text="NAS host or IP" VerticalAlignment="Center" />
-              <TextBox Grid.Row="0" Grid.Column="1" x:Name="HostBox" Watermark="nas.example.local or 192.168.1.8" ToolTip.Tip="The NAS address QSurfer uses for Qsirch search requests." />
-              <TextBlock Grid.Row="1" Text="Port" VerticalAlignment="Center" />
-              <TextBox Grid.Row="1" Grid.Column="1" x:Name="PortBox" ToolTip.Tip="The NAS Qsirch port, usually 443 with HTTPS." />
-              <TextBlock Grid.Row="2" Text="Username" VerticalAlignment="Center" />
-              <TextBox Grid.Row="2" Grid.Column="1" x:Name="UsernameBox" ToolTip.Tip="Account QSurfer uses for Qsirch search requests. It does not change file permissions." />
-              <TextBlock Grid.Row="3" Text="Password" VerticalAlignment="Center" />
-              <TextBox Grid.Row="3" Grid.Column="1" x:Name="PasswordBox" PasswordChar="•" ToolTip.Tip="Leave blank to keep the saved credential. Enter a value only to replace it." />
-              <StackPanel Grid.Row="4" Grid.Column="1" Spacing="8">
-                <CheckBox x:Name="SslBox" Content="Use HTTPS" />
-                <CheckBox x:Name="VerifyCertificateBox" Content="Verify the HTTPS certificate" />
-              </StackPanel>
-            </Grid>
-            <CheckBox x:Name="SaveSharedConnectionDefaultsBox"
-                      Margin="14,0,0,0"
-                      Content="Global: store this NAS connection as a deployment default"
-                      ToolTip.Tip="Global connection defaults include the host, port, security options, username, and encrypted password together." />
+      <TabItem Header="Providers">
+        <DockPanel Margin="12">
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+            <Button Content="Add Qsirch NAS" Click="AddQsirchProvider_Click" />
+            <Button Content="Add QIndexer" Click="AddQIndexerProvider_Click" />
+            <Button Content="Remove selected" Click="RemoveAdditionalProvider_Click" />
+          </StackPanel>
+          <Grid RowDefinitions="Auto,Auto,*" RowSpacing="10">
+            <TextBlock Text="Search providers" Classes="panel-title" />
+            <TextBlock Grid.Row="1" Text="Add a Qsirch NAS or QIndexer endpoint for every location you want to search. QSurfer combines results from every enabled, complete provider. Connections are saved for this workstation." Classes="field-label" TextWrapping="Wrap" />
+            <DataGrid Grid.Row="2" x:Name="AdditionalProvidersGrid" ItemsSource="{Binding Providers}" AutoGenerateColumns="False" CanUserResizeColumns="True" Margin="0,4,0,0">
+              <DataGrid.Columns>
+                <DataGridTemplateColumn Header="Enabled" Width="68" MinWidth="68">
+                  <DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox HorizontalAlignment="Center" IsChecked="{Binding Enabled, Mode=TwoWay}" /></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Provider" Binding="{Binding ProviderLabel}" IsReadOnly="True" Width="86" MinWidth="86" />
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="120" MinWidth="100" />
+                <DataGridTextColumn Header="Host or IP" Binding="{Binding Host}" Width="220" MinWidth="180" />
+                <DataGridTextColumn Header="Port" Binding="{Binding Port}" Width="68" MinWidth="60" />
+                <DataGridTextColumn Header="Username (Qsirch)" Binding="{Binding User}" Width="140" MinWidth="140" />
+                <DataGridTemplateColumn Header="Password / token" Width="150" MinWidth="130">
+                  <DataGridTemplateColumn.CellTemplate><DataTemplate><TextBox Text="{Binding Credential, Mode=TwoWay}" PasswordChar="•" /></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="HTTPS" Width="62" MinWidth="62">
+                  <DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox HorizontalAlignment="Center" IsChecked="{Binding Ssl, Mode=TwoWay}" /></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="Verify HTTPS certificate" Width="170" MinWidth="170">
+                  <DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox HorizontalAlignment="Center" IsChecked="{Binding SslVerify, Mode=TwoWay}" ToolTip.Tip="Verify the TLS certificate presented by this provider." /></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+              </DataGrid.Columns>
+            </DataGrid>
+          </Grid>
+        </DockPanel>
+      </TabItem>
 
-            <Border Height="1" Background="{DynamicResource QSurfer.SurfaceBorder}" Margin="0,4" />
-            <CheckBox x:Name="EnableSearchServiceBox" Content="Use QIndexer" Checked="SearchServiceEnabledChanged" Unchecked="SearchServiceEnabledChanged" />
-            <Grid x:Name="SearchServiceSettingsPanel" ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="14" Margin="14,0,0,0">
-              <TextBlock Grid.Row="0" Text="Service host or IP" VerticalAlignment="Center" />
-              <TextBox Grid.Row="0" Grid.Column="1" x:Name="SearchServiceHostBox" Watermark="search.example.local or 192.168.1.8" ToolTip.Tip="The QIndexer endpoint to query alongside Qsirch." />
-              <TextBlock Grid.Row="1" Text="Port" VerticalAlignment="Center" />
-              <TextBox Grid.Row="1" Grid.Column="1" x:Name="SearchServicePortBox" ToolTip.Tip="The service port supplied by the service administrator." />
-              <TextBlock Grid.Row="2" Text="Search token" VerticalAlignment="Center" />
-              <TextBox Grid.Row="2" Grid.Column="1" x:Name="SearchServiceTokenBox" PasswordChar="•" ToolTip.Tip="Bearer token sent only to QSurfer Search Service. Leave blank to keep the saved token." />
-              <StackPanel Grid.Row="3" Grid.Column="1" Spacing="8">
-                <CheckBox x:Name="SearchServiceSslBox" Content="Use HTTPS" />
-                <CheckBox x:Name="SearchServiceVerifyCertificateBox" Content="Verify the HTTPS certificate" />
-              </StackPanel>
-            </Grid>
-            <CheckBox x:Name="SaveSharedSearchServiceDefaultsBox"
-                      Margin="14,0,0,0"
-                      Content="Global: store this search-service connection as a deployment default" />
-            <TextBlock x:Name="SharedDeploymentLockedText"
-                       Text="Global deployment settings require an elevated session. Everyone can save a private workstation override."
-                       Opacity="0.68"
-                       TextWrapping="Wrap" />
+      <TabItem Header="QIndexer">
+        <ScrollViewer Margin="12">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Local QIndexer" Classes="panel-title" />
+            <TextBlock x:Name="LocalIndexerDescriptionText" Text="QSurfer installs an independent QIndexer service with loopback listeners. It keeps running when QSurfer is closed. Use advanced QIndexer administration to add network roots, change bindings, or enable any other QIndexer capability." Classes="field-label" TextWrapping="Wrap" />
+            <CheckBox x:Name="LocalIndexerEnabledBox" Content="Index this computer" IsEnabled="False" />
             <Border Classes="settings-note">
-              <TextBlock Text="Qsirch and QIndexer are independent. When both are configured, QSurfer asks both and combines their results. Opening and browsing files still use the signed-in user's usual network permissions." TextWrapping="Wrap" />
+              <StackPanel Spacing="5">
+                <TextBlock x:Name="LocalIndexerStatusText" Text="Checking local indexer state…" TextWrapping="Wrap" />
+                <TextBlock x:Name="LocalIndexerDetailsText" Classes="field-label" TextWrapping="Wrap" />
+                <TextBlock x:Name="LocalIndexerVolumesText" Classes="field-label" TextWrapping="Wrap" />
+              </StackPanel>
             </Border>
+            <WrapPanel>
+              <WrapPanel.Styles><Style Selector="Button"><Setter Property="Margin" Value="0,0,8,8" /></Style></WrapPanel.Styles>
+              <Button x:Name="InstallLocalIndexerButton" Content="Install local service" Click="InstallLocalIndexerService_Click" ToolTip.Tip="Downloads the latest verified QIndexer release and registers its service. It does not start indexing." />
+              <Button Content="Start local indexing" Click="StartLocalIndexer_Click" ToolTip.Tip="Starts the installed local QIndexer service and verifies its loopback health endpoint." />
+              <Button Content="Stop local indexing" Click="DisableLocalIndexer_Click" ToolTip.Tip="Stops the Windows service but preserves the config, database, and tokens." />
+              <Button Content="Uninstall local service" Click="UninstallLocalIndexer_Click" ToolTip.Tip="Stops and unregisters the QIndexer service, removing its executable and configuration while keeping indexed data." />
+              <Button Content="Check for update" Click="UpdateLocalIndexer_Click" />
+            </WrapPanel>
+            <WrapPanel>
+              <WrapPanel.Styles><Style Selector="Button"><Setter Property="Margin" Value="0,0,8,8" /></Style></WrapPanel.Styles>
+              <Button Content="Refresh diagnostics" Click="RefreshLocalIndexer_Click" />
+              <Button Content="Pause" Click="PauseLocalIndexer_Click" />
+              <Button Content="Resume" Click="ResumeLocalIndexer_Click" />
+              <Button Content="Rebuild local index" Click="RebuildLocalIndexer_Click" ToolTip.Tip="Clears and recrawls indexed rows only after confirmation. It never deletes source files." />
+              <Button Content="Open advanced QIndexer administration" Click="OpenLocalIndexerAdmin_Click" ToolTip.Tip="Support option. Opens the existing loopback QIndexer administration UI." />
+            </WrapPanel>
+            <TextBlock Text="Advanced administration requires the local admin token. Copy it here, then paste it into QIndexer's loopback-only administration page." Classes="field-label" TextWrapping="Wrap" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox x:Name="LocalIndexerAdminTokenBox" IsReadOnly="True" Watermark="Install local indexing to create the admin token" />
+              <Button Grid.Column="1" Content="Copy admin token" Click="CopyLocalIndexerAdminToken_Click" />
+            </Grid>
           </StackPanel>
         </ScrollViewer>
       </TabItem>

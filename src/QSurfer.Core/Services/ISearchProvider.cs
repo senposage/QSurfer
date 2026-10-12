@@ -59,11 +59,13 @@ public interface IScopeAwareSearchProvider
 public static class SearchProviders
 {
     public const string Qsirch = "qsirch";
+    public const string QIndexer = "qindexer";
     public const string Standalone = "qsurfer-search-service";
 
     public static bool IsStandalone(string? provider) =>
-        string.Equals(provider, Standalone, StringComparison.OrdinalIgnoreCase);
+        string.Equals(provider, Standalone, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(provider, QIndexer, StringComparison.OrdinalIgnoreCase);
 
     public static string Normalize(string? provider) =>
-        IsStandalone(provider) ? Standalone : Qsirch;
+        IsStandalone(provider) ? QIndexer : Qsirch;
 }

@@ -21,6 +21,24 @@ public sealed class CompositeSearchProviderTests
     }
 
     [Fact]
+    public async Task SearchDoesNotWaitForAStalledCompanionProvider()
+    {
+        var stalledAvailability = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stalled = new StubProvider("Qsirch", [Result("NAS result", @"\Shared\NAS result.docx")], availabilityTask: stalledAvailability.Task);
+        var local = new StubProvider("QIndexer", [Result("Local result", @"D:\Cases\Local result.docx")]);
+        using var provider = new CompositeSearchProvider([stalled, local]);
+
+        var availability = provider.EnsureAvailableAsync(CancellationToken.None);
+        Assert.Same(availability, await Task.WhenAny(availability, Task.Delay(TimeSpan.FromSeconds(1))));
+
+        var results = await provider.SearchAsync("result", AllFiles, 20, 0, "name", "asc", null, CancellationToken.None);
+
+        Assert.Equal("Local result", Assert.Single(results).Name);
+        Assert.Equal(0, stalled.SearchRequests);
+        stalledAvailability.SetResult();
+    }
+
+    [Fact]
     public async Task SearchMergesAndDeduplicatesProviderResults()
     {
         using var provider = new CompositeSearchProvider([
@@ -115,14 +133,15 @@ public sealed class CompositeSearchProviderTests
         string name,
         IReadOnlyList<SearchResult> results,
         Exception? failure = null,
-        bool acceptsScope = true) : ISearchProvider, IScopeAwareSearchProvider
+        bool acceptsScope = true,
+        Task? availabilityTask = null) : ISearchProvider, IScopeAwareSearchProvider
     {
         public string ProviderName => name;
         public int SearchRequests { get; private set; }
         public List<int> SearchOffsets { get; } = [];
 
         public Task EnsureAvailableAsync(CancellationToken cancellationToken, SearchProviderScope? scope = null) => failure == null
-            ? Task.CompletedTask
+            ? availabilityTask ?? Task.CompletedTask
             : Task.FromException(failure);
 
         public bool CanSearchScope(SearchProviderScope scope) => acceptsScope;

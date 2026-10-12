@@ -83,6 +83,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         if (startBackgroundWork && !RuntimeMode.IsDemo)
         {
             AutoConfigureLinuxMountMappings();
+            AttachManagedLocalIndexer();
         }
         _client = CreateClient();
         _mapper = new PathMapper(_config);
@@ -205,8 +206,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                                             !string.IsNullOrWhiteSpace(_config.Host) &&
                                             !string.IsNullOrWhiteSpace(_config.User) &&
                                             !string.IsNullOrWhiteSpace(_config.Password);
-    public bool IsSearchServiceConfigured => _config.SearchService.IsConfigured;
-    public bool IsConnectionConfigured => IsNasConnectionConfigured || IsSearchServiceConfigured;
+    public bool HasLocalIndexerConfigured => _config.LocalIndexer.Enabled && HasManagedLocalIndexerConnection();
+    public bool IsSearchServiceConfigured => _config.SearchService.IsConfigured || HasLocalIndexerConfigured;
+    public bool HasAdditionalProviderConfigured => _config.AdditionalSearchProviders.Any(provider => provider.IsConfigured);
+    public bool IsConnectionConfigured => IsNasConnectionConfigured || IsSearchServiceConfigured || HasAdditionalProviderConfigured;
     public bool NeedsConnection => !IsConnectionConfigured;
     public string CurrentWindowsUser
     {
@@ -644,6 +647,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         _ = LoadNasNavigationRootAsync();
         IsPreviewVisible = _config.Behavior.PreviewPane;
         OnPropertyChanged(nameof(IsConnectionConfigured));
+        OnPropertyChanged(nameof(HasAdditionalProviderConfigured));
+        OnPropertyChanged(nameof(HasLocalIndexerConfigured));
+        OnPropertyChanged(nameof(IsNasConnectionConfigured));
         OnPropertyChanged(nameof(IsSearchServiceConfigured));
         OnPropertyChanged(nameof(NeedsConnection));
         OnPropertyChanged(nameof(ConnectionSummary));
@@ -662,16 +668,143 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             qsirch.SessionRecoveryStatus += message => Dispatcher.UIThread.Post(() => Status = message);
             providers.Add(qsirch);
         }
-        if (IsSearchServiceConfigured)
+        if (_config.SearchService.IsConfigured)
         {
             providers.Add(new QSurferSearchServiceClient(_config));
+        }
+        if (_config.LocalIndexer.Enabled && LocalIndexerManager.IsSupported)
+        {
+            try
+            {
+                using var localIndexer = new LocalIndexerManager();
+                var localConnection = localIndexer.TryGetSearchConnection();
+                if (localConnection != null)
+                {
+                    var localConfig = new AppConfig
+                    {
+                        Behavior = _config.Behavior,
+                        PathMappings = _config.PathMappings,
+                        SearchService = localConnection,
+                    };
+                    providers.Add(new QSurferSearchServiceClient(localConfig, null, "Local QIndexer"));
+                }
+            }
+            catch (Exception ex)
+            {
+                // A temporarily unavailable managed service must not prevent
+                // independently configured NAS or remote-indexer providers.
+                AppLogger.Warn("indexer", $"could not create managed local QIndexer provider error=\"{ex.Message}\"");
+            }
+        }
+        foreach (var provider in _config.AdditionalSearchProviders.Where(provider => provider.IsConfigured))
+        {
+            var displayName = string.IsNullOrWhiteSpace(provider.Name)
+                ? $"{provider.ProviderLabel} ({provider.Host})"
+                : $"{provider.ProviderLabel}: {provider.Name}";
+            if (provider.IsQsirch)
+            {
+                var providerConfig = CreateProviderConfig(provider);
+                var qsirch = new QsirchClient(providerConfig, displayName);
+                qsirch.SessionRecoveryStatus += message => Dispatcher.UIThread.Post(() => Status = message);
+                providers.Add(qsirch);
+            }
+            else if (provider.IsQIndexer)
+            {
+                providers.Add(new QSurferSearchServiceClient(CreateProviderConfig(provider), null, displayName));
+            }
         }
         return providers.Count switch
         {
             1 => providers[0],
             > 1 => new CompositeSearchProvider(providers),
-            _ => new QsirchClient(_config),
+            _ => new UnavailableSearchProvider("Add a NAS, remote QIndexer, or running local QIndexer connection before searching."),
         };
+    }
+
+    private AppConfig CreateProviderConfig(SearchProviderConnection provider)
+    {
+        // Each client gets an isolated connection shape while retaining shared
+        // behavior and path mappings used to resolve results on this computer.
+        var config = new AppConfig
+        {
+            Host = _config.Host,
+            Port = _config.Port,
+            Ssl = _config.Ssl,
+            SslVerify = _config.SslVerify,
+            User = _config.User,
+            Password = _config.Password,
+            PathMappings = _config.PathMappings,
+            Behavior = _config.Behavior,
+        };
+        if (provider.IsQsirch)
+        {
+            config.Host = provider.Host;
+            config.Port = provider.Port;
+            config.Ssl = provider.Ssl;
+            config.SslVerify = provider.SslVerify;
+            config.User = provider.User;
+            config.Password = provider.Password;
+        }
+        else
+        {
+            config.SearchService = new SearchServiceConnection
+            {
+                Enabled = provider.Enabled,
+                Host = provider.Host,
+                Port = provider.Port,
+                Ssl = provider.Ssl,
+                SslVerify = provider.SslVerify,
+                Token = provider.Token,
+            };
+        }
+        return config;
+    }
+
+    private bool HasManagedLocalIndexerConnection()
+    {
+        if (!LocalIndexerManager.IsSupported)
+        {
+            return false;
+        }
+        try
+        {
+            using var manager = new LocalIndexerManager();
+            return manager.TryGetSearchConnection() != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void AttachManagedLocalIndexer()
+    {
+        if (!LocalIndexerManager.IsSupported || _config.LocalIndexer.Enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            using var manager = new LocalIndexerManager();
+            if (manager.TryGetSearchConnection() == null)
+            {
+                return;
+            }
+
+            // The service starts independently of the UI.
+            // Latch the local-provider preference so a later QSurfer launch uses
+            // the already-running loopback indexer without another setup step.
+            _config.LocalIndexer.Enabled = true;
+            ConfigStore.Save(_config);
+            AppLogger.Info("indexer", "attached existing managed local QIndexer service at startup");
+        }
+        catch (Exception ex)
+        {
+            // A missing or unreadable managed state must not prevent normal NAS
+            // providers from loading. The local service can be enabled later.
+            AppLogger.Warn("indexer", $"could not attach managed local QIndexer at startup error=\"{ex.Message}\"");
+        }
     }
 
     public bool IsAddressSuggestionsOpen

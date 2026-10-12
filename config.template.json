@@ -6,5 +6,6 @@
   "user": "",
   "password": "",
   "password_protected": "",
+  "additional_search_providers": [],
   "path_mappings": []
 }

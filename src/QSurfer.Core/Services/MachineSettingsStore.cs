@@ -43,7 +43,7 @@ public sealed class MachineSettingsStore
             {
                 using var connection = Open();
                 using var command = connection.CreateCommand();
-                command.CommandText = "SELECT settings_json, password_protected, search_service_token_protected FROM machine_settings WHERE machine_id = $machine;";
+                command.CommandText = "SELECT settings_json, password_protected, search_service_token_protected, additional_provider_credentials_protected FROM machine_settings WHERE machine_id = $machine;";
                 command.Parameters.AddWithValue("$machine", AppConfig.CurrentHostKey);
                 using var reader = command.ExecuteReader();
                 if (!reader.Read())
@@ -68,6 +68,8 @@ public sealed class MachineSettingsStore
                 var keyringAvailable = LinuxSecretStore.IsAvailable;
                 var passwordLoadedFromKeyring = false;
                 var requiresCredentialUpgrade = !string.IsNullOrWhiteSpace(settings.SearchService.Token);
+                requiresCredentialUpgrade |= settings.AdditionalSearchProviders.Any(provider =>
+                    !string.IsNullOrWhiteSpace(provider.Password) || !string.IsNullOrWhiteSpace(provider.Token));
                 var requiresLayoutUpgrade = Math.Abs(settings.Behavior.FavoritesNavigationSplit - 0.6) < 0.001;
                 if (requiresLayoutUpgrade)
                 {
@@ -97,6 +99,12 @@ public sealed class MachineSettingsStore
                     var tokenPayload = reader.GetFieldValue<byte[]>(2);
                     settings.SearchService.Token = UnprotectStoredSecret(tokenPayload, "QIndexer token", out var tokenNeedsUpgrade);
                     requiresCredentialUpgrade |= tokenNeedsUpgrade;
+                }
+                if (!reader.IsDBNull(3))
+                {
+                    var credentialsPayload = reader.GetFieldValue<byte[]>(3);
+                    RestoreAdditionalProviderCredentials(settings, UnprotectStoredSecret(credentialsPayload, "additional provider credentials", out var credentialsNeedUpgrade));
+                    requiresCredentialUpgrade |= credentialsNeedUpgrade;
                 }
                 AppLogger.Info("config", "loaded local SQLite settings");
                 if (requiresLayoutUpgrade || requiresCredentialUpgrade ||
@@ -130,18 +138,20 @@ public sealed class MachineSettingsStore
                 using var connection = Open();
                 using var command = connection.CreateCommand();
                 command.CommandText = """
-                    INSERT INTO machine_settings (machine_id, settings_json, password_protected, search_service_token_protected, updated_at)
-                    VALUES ($machine, $settings, $password, $serviceToken, $updated)
+                    INSERT INTO machine_settings (machine_id, settings_json, password_protected, search_service_token_protected, additional_provider_credentials_protected, updated_at)
+                    VALUES ($machine, $settings, $password, $serviceToken, $additionalProviderCredentials, $updated)
                     ON CONFLICT(machine_id) DO UPDATE SET
                         settings_json = excluded.settings_json,
                         password_protected = excluded.password_protected,
                         search_service_token_protected = excluded.search_service_token_protected,
+                        additional_provider_credentials_protected = excluded.additional_provider_credentials_protected,
                         updated_at = excluded.updated_at;
                     """;
                 command.Parameters.AddWithValue("$machine", AppConfig.CurrentHostKey);
                 command.Parameters.AddWithValue("$settings", SerializeWithoutPassword(settings));
                 command.Parameters.Add("$password", SqliteType.Blob).Value = ProtectPassword(settings.Password) ?? (object)DBNull.Value;
                 command.Parameters.Add("$serviceToken", SqliteType.Blob).Value = ProtectLocalSecret(settings.SearchService.Token) ?? (object)DBNull.Value;
+                command.Parameters.Add("$additionalProviderCredentials", SqliteType.Blob).Value = ProtectAdditionalProviderCredentials(settings) ?? (object)DBNull.Value;
                 command.Parameters.AddWithValue("$updated", DateTime.UtcNow.Ticks);
                 command.ExecuteNonQuery();
                 AppLogger.Info("config", $"saved local SQLite settings hostPresent={!string.IsNullOrWhiteSpace(settings.Host)} userPresent={!string.IsNullOrWhiteSpace(settings.User)} credentialPresent={!string.IsNullOrWhiteSpace(settings.Password)}");
@@ -175,6 +185,7 @@ public sealed class MachineSettingsStore
             command.ExecuteNonQuery();
             EnsureColumn(connection, "machine_settings", "password_protected", "BLOB NULL");
             EnsureColumn(connection, "machine_settings", "search_service_token_protected", "BLOB NULL");
+            EnsureColumn(connection, "machine_settings", "additional_provider_credentials_protected", "BLOB NULL");
             _initialized = true;
         }
         return connection;
@@ -264,8 +275,49 @@ public sealed class MachineSettingsStore
             service["token"] = "";
             service["token_protected"] = "";
         }
+        if (node["additional_search_providers"] is JsonArray providers)
+        {
+            foreach (var provider in providers.OfType<JsonObject>())
+            {
+                provider["password"] = "";
+                provider["token"] = "";
+            }
+        }
         return node.ToJsonString(JsonOptions);
     }
+
+    private static byte[]? ProtectAdditionalProviderCredentials(HostConfig settings)
+    {
+        var credentials = settings.AdditionalSearchProviders
+            .Select(provider => new AdditionalProviderCredentials(provider.Password, provider.Token))
+            .ToList();
+        return credentials.All(credential => string.IsNullOrEmpty(credential.Password) && string.IsNullOrEmpty(credential.Token))
+            ? null
+            : ProtectLocalSecret(JsonSerializer.Serialize(credentials, JsonOptions));
+    }
+
+    private static void RestoreAdditionalProviderCredentials(HostConfig settings, string payload)
+    {
+        try
+        {
+            var credentials = JsonSerializer.Deserialize<List<AdditionalProviderCredentials>>(payload, JsonOptions);
+            if (credentials == null)
+            {
+                return;
+            }
+            foreach (var pair in settings.AdditionalSearchProviders.Zip(credentials, (provider, credential) => (provider, credential)))
+            {
+                pair.provider.Password = pair.credential.Password ?? "";
+                pair.provider.Token = pair.credential.Token ?? "";
+            }
+        }
+        catch (JsonException)
+        {
+            AppLogger.Warn("config", "could not read encrypted additional provider credentials");
+        }
+    }
+
+    private sealed record AdditionalProviderCredentials(string Password, string Token);
 
     private static byte[]? ProtectLocalSecret(string secret)
     {

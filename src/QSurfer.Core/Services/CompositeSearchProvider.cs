@@ -8,9 +8,12 @@ namespace QSurfer.Core.Services;
 /// </summary>
 public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> providers) : ISearchProvider
 {
+    private static readonly TimeSpan AvailabilityProbeWindow = TimeSpan.FromMilliseconds(750);
     private readonly IReadOnlyList<ISearchProvider> _providers = providers.ToList();
     private readonly object _searchCacheLock = new();
     private readonly Dictionary<SearchCacheKey, ProviderSearchCache> _searchCaches = [];
+    private readonly object _availabilityLock = new();
+    private readonly Dictionary<string, IReadOnlyList<ISearchProvider>> _readyProvidersByScope = [];
 
     public string ProviderName => string.Join(" + ", _providers.Select(provider => provider.ProviderName));
 
@@ -21,14 +24,57 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         {
             throw new InvalidOperationException("No configured search provider indexes the selected folders.");
         }
-        var checks = await Task.WhenAll(providers.Select(provider => CheckAvailabilityAsync(provider, cancellationToken, scope)));
-        if (checks.Any(check => check.Success))
+
+        var pending = providers
+            .Select(provider => CheckAvailabilityAsync(provider, cancellationToken, scope))
+            .ToList();
+        var checks = new List<ProviderResult>();
+        var deadline = Task.Delay(AvailabilityProbeWindow, cancellationToken);
+
+        // A slow remote provider must not block a responsive local indexer. Gather
+        // providers that prove they are ready during a short probe, then start the
+        // search against them while the slow provider remains a later retry.
+        while (pending.Count > 0)
         {
+            var completed = await Task.WhenAny(pending.Cast<Task>().Append(deadline));
+            if (ReferenceEquals(completed, deadline))
+            {
+                break;
+            }
+
+            var check = await (Task<ProviderResult>)completed;
+            pending.Remove((Task<ProviderResult>)completed);
+            checks.Add(check);
+        }
+
+        var ready = checks.Where(check => check.Success).ToList();
+        if (ready.Count > 0)
+        {
+            RememberReadyProviders(scope, ready.Select(check => check.ProviderInstance));
             foreach (var failure in checks.Where(check => !check.Success))
             {
                 AppLogger.Warn("search", $"optional provider unavailable provider=\"{failure.Provider}\" error=\"{failure.Error!.Message}\"");
             }
+            foreach (var delayedCheck in pending)
+            {
+                _ = LogDeferredAvailabilityAsync(delayedCheck);
+            }
             return;
+        }
+
+        if (pending.Count > 0)
+        {
+            checks.AddRange(await Task.WhenAll(pending));
+            ready = checks.Where(check => check.Success).ToList();
+            if (ready.Count > 0)
+            {
+                RememberReadyProviders(scope, ready.Select(check => check.ProviderInstance));
+                foreach (var failure in checks.Where(check => !check.Success))
+                {
+                    AppLogger.Warn("search", $"optional provider unavailable provider=\"{failure.Provider}\" error=\"{failure.Error!.Message}\"");
+                }
+                return;
+            }
         }
 
         throw new InvalidOperationException($"No configured search provider is available. {string.Join(" ", checks.Select(check => $"{check.Provider}: {check.Error?.Message}"))}");
@@ -47,7 +93,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         SearchProviderQueryOptions? options = null)
     {
         var requested = Math.Max(1, offset + limit);
-        var providers = ProvidersForScope(scope);
+        var providers = ReadyProvidersForScope(scope);
         if (providers.Count == 0)
         {
             throw new InvalidOperationException("No configured search provider indexes the selected folders.");
@@ -82,7 +128,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         CancellationToken cancellationToken,
         SearchProviderScope? scope = null)
     {
-        var providers = ProvidersForScope(scope);
+        var providers = ReadyProvidersForScope(scope);
         if (providers.Count == 0)
         {
             return [];
@@ -91,11 +137,11 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         {
             try
             {
-                return new ProviderResult(provider.ProviderName, await provider.SearchDirectoriesAsync(query, limit, cancellationToken, scope), null);
+                return new ProviderResult(provider, await provider.SearchDirectoriesAsync(query, limit, cancellationToken, scope), null);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                return new ProviderResult(provider.ProviderName, [], ex);
+                return new ProviderResult(provider, [], ex);
             }
         }));
         var successful = searches.Where(search => search.Error == null).ToList();
@@ -177,11 +223,11 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         try
         {
             await provider.EnsureAvailableAsync(cancellationToken, scope);
-            return new ProviderResult(provider.ProviderName, [], null);
+            return new ProviderResult(provider, [], null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            return new ProviderResult(provider.ProviderName, [], ex);
+            return new ProviderResult(provider, [], ex);
         }
     }
 
@@ -200,7 +246,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         var cache = GetSearchCache(provider, query, typeFilter, sortBy, sortDirection, scope, options, refresh);
         if (cache.Failure != null)
         {
-            return new ProviderResult(provider.ProviderName, [], cache.Failure);
+            return new ProviderResult(provider, [], cache.Failure);
         }
 
         try
@@ -210,7 +256,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
             {
                 if (cache.Failure != null)
                 {
-                    return new ProviderResult(provider.ProviderName, [], cache.Failure);
+                    return new ProviderResult(provider, [], cache.Failure);
                 }
 
                 while (!cache.IsComplete && cache.Results.Count < requested)
@@ -234,7 +280,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
                     }
                 }
 
-                return new ProviderResult(provider.ProviderName, cache.Results.Take(requested).ToList(), null);
+                return new ProviderResult(provider, cache.Results.Take(requested).ToList(), null);
             }
             finally
             {
@@ -244,7 +290,7 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             cache.Failure = ex;
-            return new ProviderResult(provider.ProviderName, [], ex);
+            return new ProviderResult(provider, [], ex);
         }
     }
 
@@ -313,8 +359,49 @@ public sealed class CompositeSearchProvider(IEnumerable<ISearchProvider> provide
         };
     }
 
-    private sealed record ProviderResult(string Provider, IReadOnlyList<SearchResult> Results, Exception? Error)
+    private IReadOnlyList<ISearchProvider> ReadyProvidersForScope(SearchProviderScope? scope)
     {
+        var eligible = ProvidersForScope(scope);
+        lock (_availabilityLock)
+        {
+            return _readyProvidersByScope.TryGetValue(ScopeKey(scope), out var ready)
+                ? eligible.Where(ready.Contains).ToList()
+                : eligible;
+        }
+    }
+
+    private void RememberReadyProviders(SearchProviderScope? scope, IEnumerable<ISearchProvider> providers)
+    {
+        lock (_availabilityLock)
+        {
+            _readyProvidersByScope[ScopeKey(scope)] = providers.Distinct().ToList();
+        }
+    }
+
+    private static string ScopeKey(SearchProviderScope? scope) => string.Join('|', [
+        string.Join('\u001f', scope?.IncludePaths ?? []),
+        string.Join('\u001f', scope?.ExcludePaths ?? []),
+    ]);
+
+    private static async Task LogDeferredAvailabilityAsync(Task<ProviderResult> check)
+    {
+        try
+        {
+            var result = await check;
+            if (!result.Success)
+            {
+                AppLogger.Warn("search", $"optional provider unavailable provider=\"{result.Provider}\" error=\"{result.Error!.Message}\"");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The user started a new search before the slow provider finished.
+        }
+    }
+
+    private sealed record ProviderResult(ISearchProvider ProviderInstance, IReadOnlyList<SearchResult> Results, Exception? Error)
+    {
+        public string Provider => ProviderInstance.ProviderName;
         public bool Success => Error == null;
     }
 

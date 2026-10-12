@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -21,6 +23,7 @@ public sealed partial class SettingsWindow : Window
     private static readonly TimeSpan EscapeClearDelay = TimeSpan.FromMilliseconds(650);
     private bool _updatingThemeColors;
     private bool _applyingThemePreset;
+    private LocalIndexerManager? _localIndexer;
 
     public SettingsWindow() : this(new AppConfig(), null)
     {
@@ -31,15 +34,20 @@ public sealed partial class SettingsWindow : Window
         _config = config;
         _configureHotkey = configureHotkey;
         InitializeComponent();
+        if (OperatingSystem.IsLinux())
+        {
+            LocalIndexerDescriptionText.Text = "QSurfer downloads the latest verified QIndexer release from GitHub and installs it as a systemd service. It keeps running when QSurfer is closed. The service runs as this user; configure mounted network roots through advanced QIndexer administration.";
+            InstallLocalIndexerButton.Content = "Install Linux service";
+        }
+        Opened += async (_, _) =>
+        {
+            FitToCurrentDisplay();
+            AppLogger.Info("settings", "settings opened; refreshing local QIndexer status");
+            await RefreshLocalIndexerStatusAsync();
+        };
+        Closed += (_, _) => ResetLocalIndexerManager();
 
         CanEditGlobalSettings = GlobalRuleAuthorization.CanManageGlobalSettings();
-        SaveSharedConnectionDefaultsBox.IsEnabled = CanEditGlobalSettings;
-        SaveSharedSearchServiceDefaultsBox.IsEnabled = CanEditGlobalSettings;
-        SharedDeploymentLockedText.IsVisible = !CanEditGlobalSettings;
-        if (!CanEditGlobalSettings && !OperatingSystem.IsWindows())
-        {
-            SharedDeploymentLockedText.Text = "Global deployment settings require write access to this QSurfer deployment's config folder. Ordinary saves remain private to this user.";
-        }
         var currentUser = GlobalRuleAuthorization.GetCurrentUserStatus();
         WindowsIdentityText.Text = $"Current user: {currentUser.UserName}  |  Access: {currentUser.DisplayStatus}";
         _initialGlobalFolderRules = config.Exclude.FolderRules.Where(rule => rule.IsGlobal).Select(CloneRule).ToList();
@@ -48,6 +56,7 @@ public sealed partial class SettingsWindow : Window
         _initialGlobalMappings = config.PathMappings.Where(mapping => mapping.IsGlobal).Select(CloneMapping).ToList();
 
         Mappings = new ObservableCollection<PathMapping>(config.PathMappings.Select(CloneMapping));
+        Providers = new ObservableCollection<SearchProviderConnection>(CreateProviderRows(config));
         DetectedMappings = new ObservableCollection<WindowsDriveMapping>(PathMapper.DiscoverWindowsDriveMappings());
         FolderRules = new ObservableCollection<ScopedTextRule>(config.Exclude.FolderRules.Select(CloneRule));
         FileRules = new ObservableCollection<ScopedTextRule>(config.Exclude.FileRules.Select(CloneRule));
@@ -59,6 +68,7 @@ public sealed partial class SettingsWindow : Window
             IsGlobal = rule.IsGlobal,
         }));
         MappingsGrid.ItemsSource = Mappings;
+        AdditionalProvidersGrid.ItemsSource = Providers;
         DetectedMappingsGrid.ItemsSource = DetectedMappings;
         FolderRulesGrid.ItemsSource = FolderRules;
         FileRulesGrid.ItemsSource = FileRules;
@@ -66,29 +76,6 @@ public sealed partial class SettingsWindow : Window
 
         ConfigurePathMappingsForPlatform();
 
-        EnableQsirchBox.IsChecked = config.QsirchEnabled;
-        HostBox.Text = config.Host;
-        PortBox.Text = config.Port.ToString();
-        UsernameBox.Text = config.User;
-        // Credentials are never reflected back into the UI. Leave this empty
-        // to retain the saved credential, or enter a value to replace it.
-        PasswordBox.Text = "";
-        PasswordBox.Watermark = string.IsNullOrWhiteSpace(config.Password)
-            ? "Required"
-            : "Saved credential (enter to replace)";
-        SslBox.IsChecked = config.Ssl;
-        VerifyCertificateBox.IsChecked = config.SslVerify;
-        EnableSearchServiceBox.IsChecked = config.SearchService.Enabled;
-        SearchServiceHostBox.Text = config.SearchService.Host;
-        SearchServicePortBox.Text = config.SearchService.Port.ToString();
-        SearchServiceTokenBox.Text = "";
-        SearchServiceTokenBox.Watermark = string.IsNullOrWhiteSpace(config.SearchService.Token)
-            ? "Required bearer token"
-            : "Saved token (enter to replace)";
-        SearchServiceSslBox.IsChecked = config.SearchService.Ssl;
-        SearchServiceVerifyCertificateBox.IsChecked = config.SearchService.SslVerify;
-        UpdateQsirchFields();
-        UpdateSearchServiceFields();
         ShowInTaskbarBox.IsChecked = config.Behavior.ShowInTaskbar;
         MinimizeToTrayBox.IsChecked = config.Behavior.MinimizeToTray;
         ExitToTrayBox.IsChecked = config.Behavior.ExitToTray;
@@ -105,6 +92,7 @@ public sealed partial class SettingsWindow : Window
         ShowLocalNavigationFoldersBox.IsChecked = config.Behavior.ShowLocalNavigationFolders;
         ShowLocalNavigationDrivesBox.IsChecked = config.Behavior.ShowLocalNavigationDrives;
         UseThumbnailsBox.IsChecked = config.Behavior.UseQsirchThumbnails;
+        LocalIndexerEnabledBox.IsChecked = config.LocalIndexer.Enabled;
         ResultLimitBox.Text = Math.Max(config.Behavior.MaxSearchResults, 50).ToString();
         SearchTimeoutBox.Text = Math.Clamp(config.Behavior.SearchTimeoutSeconds, 10, 300).ToString();
         FirstPageSizeBox.Text = Math.Clamp(config.Behavior.FirstPageSize, 5, 500).ToString();
@@ -143,62 +131,62 @@ public sealed partial class SettingsWindow : Window
     public bool ClearHistoryRequested { get; private set; }
     public bool ClearStarredRequested { get; private set; }
     public bool ResetDatabaseRequested { get; private set; }
+    public event EventHandler? LocalIndexerAvailabilityChanged;
     public bool CanEditGlobalSettings { get; }
     public bool CanEditGlobalRules => CanEditGlobalSettings;
     public bool GlobalRulesAreLocked => !CanEditGlobalSettings;
     public ObservableCollection<PathMapping> Mappings { get; }
+    public ObservableCollection<SearchProviderConnection> Providers { get; }
     public ObservableCollection<WindowsDriveMapping> DetectedMappings { get; }
     public ObservableCollection<ScopedTextRule> FolderRules { get; }
     public ObservableCollection<ScopedTextRule> FileRules { get; }
     public ObservableCollection<VisibilityRule> VisibilityRules { get; }
 
+    private void FitToCurrentDisplay()
+    {
+        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen == null)
+        {
+            return;
+        }
+
+        // Avalonia reports a screen's working area in physical pixels while a
+        // Window's dimensions are device-independent pixels. Use the current
+        // display scale so the dialog fits equally well on high-DPI monitors.
+        var scale = RenderScaling > 0 ? RenderScaling : 1;
+        var width = screen.WorkingArea.Width / scale;
+        var height = screen.WorkingArea.Height / scale;
+        MaxWidth = width;
+        MaxHeight = height;
+        Width = width * 0.92;
+        Height = height * 0.88;
+    }
+
     private void Save_Click(object? sender, RoutedEventArgs e)
     {
-        var host = NasIdentity.NormalizeHost(HostBox.Text);
-        var user = UsernameBox.Text?.Trim() ?? "";
-        var enteredPassword = PasswordBox.Text ?? "";
-        var password = string.IsNullOrWhiteSpace(enteredPassword) ? _config.Password : enteredPassword;
-        var qsirchEnabled = EnableQsirchBox.IsChecked == true;
-        if (qsirchEnabled &&
-            (!string.IsNullOrWhiteSpace(host) || !string.IsNullOrWhiteSpace(user) || !string.IsNullOrWhiteSpace(password)) &&
-            (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password)))
+        var providers = Providers
+            .Where(provider => provider.Enabled || !string.IsNullOrWhiteSpace(provider.Host) || !string.IsNullOrWhiteSpace(provider.User) || !string.IsNullOrWhiteSpace(provider.Credential))
+            .Select(CloneProvider)
+            .ToList();
+        foreach (var provider in providers)
         {
-            ShowValidation("Enter the NAS host, username, and password together.");
+            provider.Normalize();
+            if (provider.Enabled && !provider.IsConfigured)
+            {
+                var label = string.IsNullOrWhiteSpace(provider.Name) ? provider.Host : provider.Name;
+                ShowValidation($"Complete the {provider.ProviderLabel} connection for {label}, or disable it.");
+                return;
+            }
+        }
+        if (!providers.Any(provider => provider.IsConfigured) && LocalIndexerEnabledBox.IsChecked != true)
+        {
+            ShowValidation("Add and complete a search provider, or enable the managed QIndexer.");
             return;
         }
-        if (!int.TryParse(PortBox.Text, out var port) || port is < 1 or > 65535)
-        {
-            ShowValidation("Enter a port number between 1 and 65535.");
-            return;
-        }
-        var serviceEnabled = EnableSearchServiceBox.IsChecked == true;
-        var serviceHost = NasIdentity.NormalizeHost(SearchServiceHostBox.Text);
-        var enteredServiceToken = SearchServiceTokenBox.Text ?? "";
-        var serviceToken = string.IsNullOrWhiteSpace(enteredServiceToken)
-            ? _config.SearchService.Token
-            : enteredServiceToken;
-        if (!int.TryParse(SearchServicePortBox.Text, out var servicePort) || servicePort is < 1 or > 65535)
-        {
-            ShowValidation("Enter a search-service port number between 1 and 65535.");
-            return;
-        }
-        if (serviceEnabled && (string.IsNullOrWhiteSpace(serviceHost) || string.IsNullOrWhiteSpace(serviceToken)))
-        {
-            ShowValidation("Enter the search-service host and token together.");
-            return;
-        }
-        if (!qsirchEnabled && !serviceEnabled)
-        {
-            ShowValidation("Configure the NAS connection, QSurfer Search Service, or both.");
-            return;
-        }
-        var saveSharedConnectionDefaults = SaveSharedConnectionDefaultsBox.IsChecked == true;
-        var saveSharedSearchServiceDefaults = SaveSharedSearchServiceDefaultsBox.IsChecked == true;
-        if ((saveSharedConnectionDefaults || saveSharedSearchServiceDefaults) && !CanEditGlobalSettings)
-        {
-            ShowValidation("Only a local Administrator or Domain Admin can update shared deployment defaults.");
-            return;
-        }
+        var primaryQsirch = providers.FirstOrDefault(provider => provider.IsQsirch && provider.IsConfigured)
+            ?? providers.FirstOrDefault(provider => provider.IsQsirch);
+        var primaryQIndexer = providers.FirstOrDefault(provider => provider.IsQIndexer && provider.IsConfigured)
+            ?? providers.FirstOrDefault(provider => provider.IsQIndexer);
         if (!int.TryParse(ResultLimitBox.Text, out var limit) || limit < 50)
         {
             ShowValidation("Search result limit must be at least 50.");
@@ -259,22 +247,27 @@ public sealed partial class SettingsWindow : Window
         }
 
         _config.SearchProvider = SearchProviders.Qsirch;
-        _config.QsirchEnabled = qsirchEnabled;
-        _config.Host = host;
-        _config.Port = SslBox.IsChecked == true && port == 8080 ? 443 : port;
-        _config.User = user;
-        _config.Password = password;
-        _config.Ssl = SslBox.IsChecked == true;
-        _config.SslVerify = VerifyCertificateBox.IsChecked == true;
+        _config.QsirchEnabled = primaryQsirch?.Enabled == true;
+        _config.Host = primaryQsirch?.Host ?? "";
+        _config.Port = primaryQsirch?.Port ?? 443;
+        _config.User = primaryQsirch?.User ?? "";
+        _config.Password = primaryQsirch?.Password ?? "";
+        _config.Ssl = primaryQsirch?.Ssl ?? true;
+        _config.SslVerify = primaryQsirch?.SslVerify ?? true;
         _config.SearchService = new SearchServiceConnection
         {
-            Enabled = serviceEnabled,
-            Host = serviceHost,
-            Port = SearchServiceSslBox.IsChecked == true && servicePort == 8080 ? 443 : servicePort,
-            Ssl = SearchServiceSslBox.IsChecked == true,
-            SslVerify = SearchServiceVerifyCertificateBox.IsChecked == true,
-            Token = serviceToken,
+            Enabled = primaryQIndexer?.Enabled == true,
+            Host = primaryQIndexer?.Host ?? "",
+            Port = primaryQIndexer?.Port ?? 41973,
+            Ssl = primaryQIndexer?.Ssl ?? false,
+            SslVerify = primaryQIndexer?.SslVerify ?? true,
+            Token = primaryQIndexer?.Token ?? "",
         };
+        _config.AdditionalSearchProviders = providers
+            .Where(provider => !ReferenceEquals(provider, primaryQsirch) && !ReferenceEquals(provider, primaryQIndexer))
+            .Select(CloneProvider)
+            .ToList();
+        _config.LocalIndexer.Enabled = LocalIndexerEnabledBox.IsChecked == true;
         _config.AlwaysOnTop = AlwaysOnTopBox.IsChecked == true;
         _config.Behavior.ShowInTaskbar = ShowInTaskbarBox.IsChecked == true;
         _config.Behavior.MinimizeToTray = MinimizeToTrayBox.IsChecked == true;
@@ -338,56 +331,491 @@ public sealed partial class SettingsWindow : Window
         _config.VisibilityRules = PreserveGlobalRules(visibilityRules, _initialGlobalVisibilityRules);
         ClearHistoryRequested = ClearHistoryBox.IsChecked == true;
         ClearStarredRequested = ClearStarredBox.IsChecked == true;
-        if (saveSharedConnectionDefaults && !ConfigStore.SaveSharedDeploymentConnection(
-                _config.Host,
-                _config.Port,
-                _config.Ssl,
-                _config.SslVerify,
-                _config.User,
-                _config.Password))
-        {
-            ShowValidation("Could not update the shared deployment defaults. Check that the portable config folder is writable and try again.");
-            return;
-        }
-        if (saveSharedSearchServiceDefaults && !ConfigStore.SaveSharedDeploymentSearchService(_config.SearchService))
-        {
-            ShowValidation("Could not update the shared search-service deployment defaults. Configure and enable the service, then try again.");
-            return;
-        }
         ConfigStore.Save(_config);
         Saved = true;
         Close();
     }
 
-    private void QsirchEnabledChanged(object? sender, RoutedEventArgs e) => UpdateQsirchFields();
-
-    private void UpdateQsirchFields()
+    private async void InstallLocalIndexerService_Click(object? sender, RoutedEventArgs e)
     {
-        if (QsirchSettingsPanel == null)
+        if (!LocalIndexerManager.IsSupported)
+        {
+            LocalIndexerStatusText.Text = "Local QIndexer management is not supported on this operating system.";
+            return;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var linuxConfirmation = new ConfirmationWindow(
+                "Install local indexing service",
+            "QSurfer will download the latest verified QIndexer release from GitHub, then ask the system for permission to install and start its boot-time systemd service. Its configuration and index stay in your QSurfer data folder.",
+                "Continue");
+            if (await linuxConfirmation.ShowDialog<bool?>(this) != true) return;
+            await RunLinuxIndexerCommandAsync("--install-local-indexer-service", "Linux service setup did not finish. The existing QIndexer state was left unchanged.");
+            return;
+        }
+
+        if (LocalIndexerManager.IsElevated())
+        {
+            await InstallLocalIndexerAsync(new LocalIndexerManager(stateDirectory: LocalIndexerManager.MachineStateRoot));
+            return;
+        }
+
+        var confirmation = new ConfirmationWindow(
+            "Install local indexing service",
+            "QSurfer will ask Windows for permission to install and start its local QIndexer service. It uses fixed local volumes and loopback listeners; advanced QIndexer administration can configure additional roots and bindings. If you cancel the Windows prompt, no service is installed.",
+            "Continue");
+        if (await confirmation.ShowDialog<bool?>(this) != true)
         {
             return;
         }
 
-        var enabled = EnableQsirchBox.IsChecked == true;
-        QsirchSettingsPanel.IsEnabled = enabled;
-        SaveSharedConnectionDefaultsBox.IsEnabled = enabled && CanEditGlobalSettings;
+        try
+        {
+            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for service setup.");
+            var startInfo = new ProcessStartInfo(executable)
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                // These are one-shot WinExe helpers. Keep them out of the
+                // user's workspace; their outcome is reported in QSurfer.
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            startInfo.ArgumentList.Add("--install-local-indexer-service");
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Windows did not start the elevated service installer.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+            {
+                LocalIndexerStatusText.Text = "Windows service setup was cancelled or did not finish.";
+                return;
+            }
+
+            ResetLocalIndexerManager();
+            SetLocalIndexerEnabled(true);
+            LocalIndexerStatusText.Text = "Local QIndexer service is installed, running, and healthy.";
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch (Win32Exception)
+        {
+            LocalIndexerStatusText.Text = "Windows elevation was cancelled. No local indexing service was installed.";
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "Windows service setup did not finish. The existing QIndexer state was left unchanged.";
+        }
     }
 
-    private void SearchServiceEnabledChanged(object? sender, RoutedEventArgs e) => UpdateSearchServiceFields();
-
-    private void UpdateSearchServiceFields()
+    private async void StartLocalIndexer_Click(object? sender, RoutedEventArgs e)
     {
-        if (SearchServiceSettingsPanel == null || SearchServiceTokenBox == null)
+        try
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                await StartLocalIndexerAsync(GetLocalIndexer());
+                return;
+            }
+
+            if (LocalIndexerManager.IsElevated())
+            {
+                await StartLocalIndexerAsync(new LocalIndexerManager(stateDirectory: LocalIndexerManager.MachineStateRoot), forceWindowsService: true);
+                return;
+            }
+
+            var confirmation = new ConfirmationWindow(
+                "Start local indexing service",
+                "Windows will ask for permission to start QSurfer's installed local QIndexer service.",
+                "Start service");
+            if (await confirmation.ShowDialog<bool?>(this) != true) return;
+
+            await RunWindowsIndexerCommandAsync("--start-local-indexer-service", "Windows could not start the local indexing service.");
+            ResetLocalIndexerManager();
+            await StartLocalIndexerAsync(GetLocalIndexer());
+        }
+        catch (Win32Exception)
+        {
+            LocalIndexerStatusText.Text = "Windows elevation was cancelled. The local indexing service was not started.";
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not be started.";
+        }
+    }
+
+    private async void UninstallLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    {
+        var confirmation = new ConfirmationWindow(
+            "Uninstall local indexing service",
+            "QSurfer will stop and unregister its local QIndexer service, then remove the managed executable, configuration, and tokens. Existing indexed data will be kept.",
+            "Uninstall service");
+        if (await confirmation.ShowDialog<bool?>(this) != true) return;
+
+        try
+        {
+            if (OperatingSystem.IsLinux() || LocalIndexerManager.IsElevated())
+            {
+                await GetLocalIndexer().UninstallAsync(removeIndexData: false);
+            }
+            else
+            {
+                await RunWindowsIndexerCommandAsync("--uninstall-local-indexer-service", "Windows could not uninstall the local indexing service.");
+            }
+
+            ResetLocalIndexerManager();
+            SetLocalIndexerEnabled(false);
+            LocalIndexerStatusText.Text = "Local QIndexer service was uninstalled. Indexed data was kept.";
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch (Win32Exception)
+        {
+            LocalIndexerStatusText.Text = "Windows elevation was cancelled. The local indexing service was kept.";
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not be uninstalled. Its existing state was kept.";
+        }
+    }
+
+    private async void DisableLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                await GetLocalIndexer().DisableAsync();
+                SetLocalIndexerEnabled(false);
+                await RefreshLocalIndexerStatusAsync();
+                return;
+            }
+            var manager = GetLocalIndexer();
+            var status = await manager.GetStatusAsync();
+            if (status.UsesWindowsService && !LocalIndexerManager.IsElevated())
+            {
+                var confirmation = new ConfirmationWindow(
+                    "Stop local indexing service",
+                    "Windows will ask for permission to stop QSurfer's local indexing service. The existing index, configuration, and tokens will be kept.",
+                    "Stop service");
+                if (await confirmation.ShowDialog<bool?>(this) != true)
+                {
+                    return;
+                }
+
+                var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable to stop the service.");
+                var startInfo = new ProcessStartInfo(executable)
+                {
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                };
+                startInfo.ArgumentList.Add("--stop-local-indexer-service");
+                using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Windows did not start the elevated service stopper.");
+                await process.WaitForExitAsync();
+                if (process.ExitCode != 0)
+                {
+                    LocalIndexerStatusText.Text = "Windows service stop was cancelled or did not finish. The index was kept.";
+                    return;
+                }
+            }
+            else
+            {
+                await manager.DisableAsync();
+            }
+            SetLocalIndexerEnabled(false);
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch (Win32Exception)
+        {
+            LocalIndexerStatusText.Text = "Windows elevation was cancelled. The local indexing service is still running.";
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not be stopped. Its data and configuration were left unchanged.";
+        }
+    }
+
+    private async void UpdateLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!LocalIndexerManager.IsSupported)
+            {
+                LocalIndexerStatusText.Text = "Local QIndexer management is not supported on this operating system.";
+                return;
+            }
+
+            if (OperatingSystem.IsLinux())
+            {
+                var confirmation = new ConfirmationWindow(
+                    "Update local QIndexer service",
+                    "QSurfer will download the latest verified QIndexer release from GitHub, then restart the Linux service. Its configuration, index, and tokens will be retained.",
+                    "Update service");
+                if (await confirmation.ShowDialog<bool?>(this) != true) return;
+                await GetLocalIndexer().UpgradeAsync();
+                SetLocalIndexerEnabled(true);
+                LocalIndexerStatusText.Text = "Local QIndexer update completed.";
+                await RefreshLocalIndexerStatusAsync();
+                return;
+            }
+
+            if (!LocalIndexerManager.IsElevated())
+            {
+                var confirmation = new ConfirmationWindow(
+                    "Update local QIndexer service",
+                    "Windows will ask for permission to stop, update, and restart QSurfer's local QIndexer service. Its configuration, index, and tokens will be retained.",
+                    "Update service");
+                if (await confirmation.ShowDialog<bool?>(this) != true)
+                {
+                    return;
+                }
+
+                var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for service update.");
+                var startInfo = new ProcessStartInfo(executable)
+                {
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                };
+                startInfo.ArgumentList.Add("--upgrade-local-indexer-service");
+                using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Windows did not start the elevated service updater.");
+                await process.WaitForExitAsync();
+                if (process.ExitCode != 0)
+                {
+                    LocalIndexerStatusText.Text = "Windows service update was cancelled or did not finish. The previous executable and index were retained.";
+                    return;
+                }
+            }
+            else
+            {
+                await GetLocalIndexer().UpgradeAsync();
+            }
+            SetLocalIndexerEnabled(true);
+            LocalIndexerStatusText.Text = "Local QIndexer update completed.";
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch (Win32Exception)
+        {
+            LocalIndexerStatusText.Text = "Windows elevation was cancelled. The existing QIndexer executable and index were retained.";
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not be updated. Its previous executable and index were retained.";
+        }
+    }
+
+    private async void RefreshLocalIndexer_Click(object? sender, RoutedEventArgs e) => await RefreshLocalIndexerStatusAsync();
+
+    private async void PauseLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await GetLocalIndexer().PauseAsync();
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not pause crawling.";
+        }
+    }
+
+    private async void ResumeLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await GetLocalIndexer().ResumeAsync();
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not resume crawling.";
+        }
+    }
+
+    private async void RebuildLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    {
+        var confirmation = new ConfirmationWindow(
+            "Rebuild local index",
+            "This clears QIndexer's indexed records for every configured root and then recrawls them. It does not delete or modify any source files. Continue?",
+            "Rebuild");
+        if (await confirmation.ShowDialog<bool?>(this) != true)
         {
             return;
         }
 
-        var enabled = EnableSearchServiceBox.IsChecked == true;
-        SearchServiceSettingsPanel.IsEnabled = enabled;
-        SaveSharedSearchServiceDefaultsBox.IsEnabled = enabled && CanEditGlobalSettings;
+        try
+        {
+            await GetLocalIndexer().RebuildAsync();
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer could not rebuild the local index.";
+        }
     }
 
-    private void Cancel_Click(object? sender, RoutedEventArgs e) => Close();
+    private void OpenLocalIndexerAdmin_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            GetLocalIndexer().OpenAdvancedAdministration();
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = "QIndexer administration is not available yet.";
+        }
+    }
+
+    private async void CopyLocalIndexerAdminToken_Click(object? sender, RoutedEventArgs e)
+    {
+        var token = GetLocalIndexer().GetAdminTokenForSupport();
+        var clipboard = GetTopLevel(this)?.Clipboard;
+        if (string.IsNullOrWhiteSpace(token) || clipboard == null)
+        {
+            LocalIndexerStatusText.Text = "The local QIndexer admin token is not available yet.";
+            return;
+        }
+
+        await clipboard.SetTextAsync(token);
+        LocalIndexerStatusText.Text = "Local QIndexer admin token copied. Paste it into the advanced administration page.";
+    }
+
+    private async Task RunLinuxIndexerCommandAsync(string command, string failureMessage)
+    {
+        try
+        {
+            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for Linux service setup.");
+            var startInfo = new ProcessStartInfo("pkexec")
+            {
+                UseShellExecute = false,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            startInfo.ArgumentList.Add(executable);
+            startInfo.ArgumentList.Add(command);
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Linux did not start the privileged service helper.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+            {
+                LocalIndexerStatusText.Text = failureMessage;
+                return;
+            }
+
+            ResetLocalIndexerManager();
+            var manager = GetLocalIndexer();
+            await manager.StartAsync();
+            var health = await manager.WaitForHealthyAsync(CancellationToken.None);
+            if (health.State != LocalIndexerHealthState.Healthy)
+            {
+                throw new InvalidOperationException(health.Message);
+            }
+            SetLocalIndexerEnabled(true);
+            LocalIndexerStatusText.Text = "Local QIndexer service is installed and healthy.";
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch
+        {
+            LocalIndexerStatusText.Text = failureMessage;
+        }
+    }
+
+    private async Task InstallLocalIndexerAsync(LocalIndexerManager manager)
+    {
+        try
+        {
+            _localIndexer?.Dispose();
+            _localIndexer = manager;
+            var setup = await manager.EnableAsync(forceWindowsService: OperatingSystem.IsWindows());
+            SetLocalIndexerEnabled(true);
+            LocalIndexerStatusText.Text = $"Local QIndexer {setup.Version} is installed, running, and healthy.";
+            await RefreshLocalIndexerStatusAsync();
+        }
+        catch
+        {
+            manager.Dispose();
+            if (ReferenceEquals(_localIndexer, manager)) _localIndexer = null;
+            LocalIndexerStatusText.Text = "QIndexer could not be installed. No unverified package was installed.";
+        }
+    }
+
+    private async Task StartLocalIndexerAsync(LocalIndexerManager manager, bool forceWindowsService = false)
+    {
+        _localIndexer?.Dispose();
+        _localIndexer = manager;
+        await manager.StartAsync(forceWindowsService: forceWindowsService);
+        var health = await manager.WaitForHealthyAsync(CancellationToken.None);
+        if (health.State != LocalIndexerHealthState.Healthy)
+        {
+            throw new InvalidOperationException(health.Message);
+        }
+        SetLocalIndexerEnabled(true);
+        LocalIndexerStatusText.Text = "Local QIndexer service is running and healthy.";
+        await RefreshLocalIndexerStatusAsync();
+    }
+
+    private static async Task RunWindowsIndexerCommandAsync(string command, string failureMessage)
+    {
+        var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for local service management.");
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        startInfo.ArgumentList.Add(command);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Windows did not start the elevated local service helper.");
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(failureMessage);
+        }
+    }
+
+    private async Task RefreshLocalIndexerStatusAsync()
+    {
+        try
+        {
+            var status = await GetLocalIndexer().GetStatusAsync();
+            LocalIndexerEnabledBox.IsChecked = _config.LocalIndexer.Enabled;
+            LocalIndexerAdminTokenBox.Text = GetLocalIndexer().GetAdminTokenForSupport() ?? "";
+            LocalIndexerStatusText.Text = status.Health.Message;
+            var mode = OperatingSystem.IsLinux() ? "Linux user service" : "Windows service";
+            LocalIndexerDetailsText.Text = status.Version == null
+                ? mode
+                : $"Version {status.Version} · {mode} · {status.DocumentCount:n0} documents · crawler {status.CrawlerState}";
+            var roots = status.Roots.Count == 0
+                ? "Configured roots: none reported yet."
+                : "Configured roots: " + string.Join("; ", status.Roots.Select(root => $"{root.Name} ({root.State}, {root.DocumentCount:n0} documents)"));
+            LocalIndexerVolumesText.Text = status.LastCrawl.HasValue
+                ? $"{roots}  Last crawl: {status.LastCrawl.Value.LocalDateTime:g}."
+                : roots;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("settings", $"local QIndexer status refresh failed error=\"{ex.Message}\"");
+            LocalIndexerAdminTokenBox.Text = "";
+            LocalIndexerStatusText.Text = "QIndexer status could not be read.";
+            LocalIndexerDetailsText.Text = "";
+            LocalIndexerVolumesText.Text = "";
+        }
+    }
+
+    private LocalIndexerManager GetLocalIndexer() => _localIndexer ??= new LocalIndexerManager();
+
+    private void ResetLocalIndexerManager()
+    {
+        _localIndexer?.Dispose();
+        _localIndexer = null;
+    }
+
+    private void SetLocalIndexerEnabled(bool enabled)
+    {
+        _config.LocalIndexer.Enabled = enabled;
+        LocalIndexerEnabledBox.IsChecked = enabled;
+        ConfigStore.Save(_config);
+        LocalIndexerAvailabilityChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void Cancel_Click(object? sender, RoutedEventArgs e)
+    {
+        Close();
+    }
 
     private bool TryReadKeyboardShortcuts(out KeyboardShortcutConfig shortcuts, out string error)
     {
@@ -504,6 +932,25 @@ public sealed partial class SettingsWindow : Window
     }
 
     private void RemoveMapping_Click(object? sender, RoutedEventArgs e) => RemoveSelected(MappingsGrid, Mappings);
+
+    private void AddQsirchProvider_Click(object? sender, RoutedEventArgs e) => AddAdditionalProvider(SearchProviders.Qsirch);
+
+    private void AddQIndexerProvider_Click(object? sender, RoutedEventArgs e) => AddAdditionalProvider(SearchProviders.QIndexer);
+
+    private void AddAdditionalProvider(string providerType)
+    {
+        var provider = new SearchProviderConnection
+        {
+            Provider = providerType,
+            Port = string.Equals(providerType, SearchProviders.QIndexer, StringComparison.OrdinalIgnoreCase) ? 41973 : 443,
+            Ssl = !string.Equals(providerType, SearchProviders.QIndexer, StringComparison.OrdinalIgnoreCase),
+            SslVerify = true,
+        };
+        Providers.Add(provider);
+        AdditionalProvidersGrid.SelectedItem = provider;
+    }
+
+    private void RemoveAdditionalProvider_Click(object? sender, RoutedEventArgs e) => RemoveSelected(AdditionalProvidersGrid, Providers);
 
     private async void MapNetworkDrive_Click(object? sender, RoutedEventArgs e)
     {
@@ -1019,6 +1466,53 @@ public sealed partial class SettingsWindow : Window
     private static string SelectedTag(ComboBox box, string fallback) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? fallback;
     private static string NormalizeMappedRoot(string path) => (path ?? "").Trim().TrimEnd('\\', '/');
     private static PathMapping CloneMapping(PathMapping mapping) => new() { ShareRoot = mapping.ShareRoot, MappedRoot = mapping.MappedRoot, IsGlobal = mapping.IsGlobal };
+    private static IEnumerable<SearchProviderConnection> CreateProviderRows(AppConfig config)
+    {
+        if (!string.IsNullOrWhiteSpace(config.Host) || !string.IsNullOrWhiteSpace(config.User) || !string.IsNullOrWhiteSpace(config.Password))
+        {
+            yield return new SearchProviderConnection
+            {
+                Provider = SearchProviders.Qsirch,
+                Enabled = config.QsirchEnabled,
+                Host = config.Host,
+                Port = config.Port,
+                Ssl = config.Ssl,
+                SslVerify = config.SslVerify,
+                User = config.User,
+                Password = config.Password,
+            };
+        }
+        if (!string.IsNullOrWhiteSpace(config.SearchService.Host) || !string.IsNullOrWhiteSpace(config.SearchService.Token))
+        {
+            yield return new SearchProviderConnection
+            {
+                Provider = SearchProviders.QIndexer,
+                Enabled = config.SearchService.Enabled,
+                Host = config.SearchService.Host,
+                Port = config.SearchService.Port,
+                Ssl = config.SearchService.Ssl,
+                SslVerify = config.SearchService.SslVerify,
+                Token = config.SearchService.Token,
+            };
+        }
+        foreach (var provider in config.AdditionalSearchProviders)
+        {
+            yield return CloneProvider(provider);
+        }
+    }
+    private static SearchProviderConnection CloneProvider(SearchProviderConnection provider) => new()
+    {
+        Provider = provider.Provider,
+        Name = provider.Name,
+        Enabled = provider.Enabled,
+        Host = provider.Host,
+        Port = provider.Port,
+        Ssl = provider.Ssl,
+        SslVerify = provider.SslVerify,
+        User = provider.User,
+        Password = provider.Password,
+        Token = provider.Token,
+    };
     private static ScopedTextRule CloneRule(ScopedTextRule rule) => new() { Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
     private static VisibilityRule CloneVisibilityRule(VisibilityRule rule) => new() { Access = rule.Access, Identity = rule.Identity, Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
 

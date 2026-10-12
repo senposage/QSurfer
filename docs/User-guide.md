@@ -5,7 +5,7 @@ QSurfer is a desktop workspace for searching indexed shared storage and browsing
 ## First connection
 
 1. Open Settings from the gear button.
-2. Enable and configure at least one search provider: **Qsirch**, **QIndexer**, or both.
+2. Add and configure at least one search provider: **Qsirch**, **QIndexer**, or both.
 3. Save the connection.
 
 Qsirch uses the NAS address, port, username, and password. QIndexer uses its own service address and search token. These credentials are used only for search requests. They do not override normal file permissions. Files still open through your mapped drive, network share, or mounted share using the currently signed-in user's access.
@@ -15,7 +15,24 @@ Qsirch uses the NAS address, port, username, and password. QIndexer uses its own
 - **Qsirch** searches the NAS index supplied by the NAS.
 - **QIndexer** searches an independently deployed QIndexer service. It can complement a NAS index and can also be configured to index other approved roots.
 - When both are enabled, QSurfer asks both and combines matching results. If one is temporarily unavailable, the healthy provider can still return results. At least one provider must be configured.
+- Add each Qsirch NAS or QIndexer endpoint under **Settings → Providers**. QSurfer searches every enabled connection, so a single query can cover multiple NAS devices.
 - A new or rebuilding QIndexer root may have fewer results until its crawl finishes. Its administrator controls what locations it indexes.
+
+### QIndexer (Windows)
+
+**Settings → QIndexer** can install a QSurfer-managed QIndexer for local search. Choose **Install / start Windows service**; Windows asks for elevation before anything is installed. The managed indexer is machine-wide and remains available when QSurfer is closed.
+
+QSurfer downloads the official Windows package, verifies its published SHA-256 checksum, and keeps the index, configuration, and separate search/admin credentials in its private state directory. The initial configuration adds ready fixed drive-letter volumes and binds search and administration to `127.0.0.1`, so NAS and remote QIndexer connections remain independent provider rows. QIndexer remains a normal deployment: use its advanced administration UI to add mapped or UNC roots, adjust listeners, enable OCR/content/hashing, or otherwise configure it.
+
+The Windows service uses its own host under `%ProgramData%\QSurfer\QIndexer\service-host`; it does not run from or depend on the QSurfer application directory. To install machine-available Tesseract and OCRmyPDF sidecars for the service, run the elevated [Install-QIndexerOcrSidecars.ps1](../scripts/Install-QIndexerOcrSidecars.ps1) script. Add `-ConfigureManagedQIndexer` to write the discovered command paths into the existing configuration; it does not turn OCR on. Enable OCR and content extraction for the roots you want from advanced QIndexer administration.
+
+Disable stops the local indexer without deleting its data. Rebuild is explicit and clears only indexed records before recrawling; it never deletes source files. The advanced administration link is intended for support and opens the loopback-only QIndexer administration page.
+
+### QIndexer (Linux)
+
+On a systemd Linux distribution, **Settings -> QIndexer -> Install / start Linux service** downloads the latest [QIndexer GitHub release](https://github.com/senposage/qindexer/releases), verifies the published SHA-256 checksum, and asks Polkit for permission to register `qindexer.service`. The service starts at boot and runs as the signed-in QSurfer user, so it sees the same mounted shares and permissions as QSurfer.
+
+The managed binary, configuration, index, and loopback tokens remain under `~/.qsurfer/QIndexer`; a QSurfer update does not overwrite them. **Check for update** follows the same verified GitHub-release path, stops the service, starts the new binary, and rolls back if it does not become healthy. The initial root is the user's home folder. Add persistent NAS mount roots through QIndexer's advanced administration after the operating system has mounted them. QIndexer is never included inside the QSurfer Linux package.
 
 ## Search
 
@@ -97,7 +114,7 @@ Folder restore has stricter protection than file restore. It requires a temporar
 
 ## Settings
 
-- **Connection** configures Qsirch and QIndexer independently. Enable either provider or both.
+- **Providers** is the single place to configure Qsirch NASes and QIndexer endpoints. Add one row per endpoint and enable the rows that should participate in searches.
 - **Behavior** controls startup, preview, recovery, visible system folders, result limits, and default view settings.
 - **Appearance** controls system/light/dark mode, accent behavior, and custom colors.
 - **Path mappings** connects search-result paths to mapped drives, network locations, or mounted shares.
@@ -111,8 +128,7 @@ Most preferences are kept in the user's local QSurfer database. Shared deploymen
 
 **Connection**
 
-- **Use Qsirch** enables the NAS search provider. **NAS host or IP**, **Port**, **Username**, and **Password** apply only to Qsirch.
-- **Use QIndexer** enables the independent QIndexer provider. Its **Service host or IP**, **Port**, and **Search token** apply only to QIndexer.
+- **Providers** holds workstation-specific Qsirch and QIndexer connections. Give each a name, host, credential, port, and HTTPS settings. An enabled row must be complete; disable it instead of deleting it when a NAS is temporarily unavailable.
 - Each provider has its own **Use HTTPS** and **Verify the HTTPS certificate** settings. Keep certificate verification on unless an administrator confirms a known internal certificate problem.
 - Qsirch and QIndexer can run together. They do not share credentials, and turning either one off keeps its saved connection details for later testing or recovery.
 
@@ -150,5 +166,6 @@ Most preferences are kept in the user's local QSurfer database. Shared deploymen
 - If search fails, check the enabled provider's host, port, HTTPS, certificate validation, and credentials or token.
 - If a result cannot open, verify its mapped drive, network location, or mounted share is available and review Path mappings.
 - If QIndexer results are incomplete, confirm its configured root has finished crawling. If the same file appears twice through a crawler mount and a shared path, its QIndexer administrator needs to reconcile that root's canonical paths.
+- For the managed **QIndexer**, open **Settings → QIndexer → Refresh diagnostics** to distinguish a stopped process/service, unavailable loopback health endpoint, rejected local credential, or an index that is still starting.
 - If a preview does not appear, try Open or Show; preview support depends on the installed platform handler for that file type.
 - Check the lower-right status text for NAS connection state and the local logs for details when a request fails.

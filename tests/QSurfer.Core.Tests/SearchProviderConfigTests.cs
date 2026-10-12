@@ -164,6 +164,69 @@ public sealed class SearchProviderConfigTests
     }
 
     [Fact]
+    public void AdditionalProviderConnectionsSurviveMachineConfigurationFlow()
+    {
+        var config = new AppConfig
+        {
+            AdditionalSearchProviders =
+            [
+                new SearchProviderConnection
+                {
+                    Provider = SearchProviders.Qsirch,
+                    Name = "Archive NAS",
+                    Host = "archive.example.local",
+                    Port = 443,
+                    User = "searcher",
+                    Password = "archive-password",
+                },
+                new SearchProviderConnection
+                {
+                    Provider = SearchProviders.QIndexer,
+                    Name = "Remote index",
+                    Host = "index.example.local",
+                    Port = 41973,
+                    Ssl = false,
+                    Token = "index-token",
+                },
+            ],
+        };
+
+        config.CaptureCurrentHost();
+        config.ApplyCurrentHost();
+
+        Assert.Collection(config.AdditionalSearchProviders,
+            qsirch =>
+            {
+                Assert.True(qsirch.IsQsirch);
+                Assert.True(qsirch.IsConfigured);
+                Assert.Equal("archive-password", qsirch.Password);
+            },
+            indexer =>
+            {
+                Assert.True(indexer.IsQIndexer);
+                Assert.True(indexer.IsConfigured);
+                Assert.Equal("index-token", indexer.Token);
+            });
+    }
+
+    [Fact]
+    public void LocalIndexerEnablementSurvivesMachineConfigurationFlowWithoutSavingSecrets()
+    {
+        var config = new AppConfig
+        {
+            LocalIndexer = new LocalIndexerSettings { Enabled = true },
+        };
+
+        config.CaptureCurrentHost();
+        config.ApplyCurrentHost();
+
+        Assert.True(config.LocalIndexer.Enabled);
+        var serialized = JsonSerializer.Serialize(config);
+        Assert.DoesNotContain("search.token", serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("admin.token", serialized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void LegacyStandaloneConnectionMigratesIntoCompanionService()
     {
         var config = new AppConfig

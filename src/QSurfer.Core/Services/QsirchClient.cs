@@ -9,7 +9,7 @@ using QSurfer.Core.Models;
 
 namespace QSurfer.Core.Services;
 
-public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwareSearchProvider
+public sealed class QsirchClient(AppConfig config, string? providerName = null) : ISearchProvider, IScopeAwareSearchProvider
 {
     private const int MaxThumbnailBytes = 4 * 1024 * 1024;
     private readonly HttpClient _http = CreateHttpClient(config);
@@ -26,7 +26,7 @@ public sealed class QsirchClient(AppConfig config) : ISearchProvider, IScopeAwar
 
     public event Action<string>? SessionRecoveryStatus;
 
-    public string ProviderName => "Qsirch";
+    public string ProviderName => providerName ?? "Qsirch";
 
     public Task EnsureAvailableAsync(CancellationToken cancellationToken, SearchProviderScope? scope = null) => EnsureAuthenticatedAsync(cancellationToken);
 

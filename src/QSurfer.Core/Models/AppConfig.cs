@@ -18,6 +18,17 @@ public sealed class AppConfig
     [JsonPropertyName("search_service")]
     public SearchServiceConnection SearchService { get; set; } = new();
 
+    // The original Qsirch and QIndexer settings above remain the primary
+    // connections for backward compatibility. This list lets a workstation
+    // query further NASes and indexers alongside that primary connection.
+    [JsonPropertyName("additional_search_providers")]
+    public List<SearchProviderConnection> AdditionalSearchProviders { get; set; } = [];
+
+    // This is deliberately only an enable preference. Local QIndexer tokens
+    // stay in ACL-protected token files owned by LocalIndexerManager.
+    [JsonPropertyName("local_indexer")]
+    public LocalIndexerSettings LocalIndexer { get; set; } = new();
+
     [JsonPropertyName("port")]
     public int Port { get; set; } = 443;
 
@@ -89,6 +100,8 @@ public sealed class AppConfig
         User = host.User;
         Password = host.Password;
         SearchService = CloneSearchService(host.SearchService);
+        AdditionalSearchProviders = host.AdditionalSearchProviders.Select(CloneSearchProvider).ToList();
+        LocalIndexer = CloneLocalIndexer(host.LocalIndexer);
         // Local mappings deliberately precede shared defaults so a workstation
         // can explicitly override a deployment mapping for the same share.
         PathMappings = host.PathMappings.Where(mapping => !mapping.IsGlobal).Select(ClonePathMapping)
@@ -139,6 +152,8 @@ public sealed class AppConfig
             User = User,
             Password = Password,
             SearchService = CloneSearchService(SearchService),
+            AdditionalSearchProviders = AdditionalSearchProviders.Select(CloneSearchProvider).ToList(),
+            LocalIndexer = CloneLocalIndexer(LocalIndexer),
             PathMappings = PathMappings.Where(mapping => !mapping.IsGlobal).Select(ClonePathMapping).ToList(),
             Behavior = CloneBehavior(Behavior),
             History = CloneHistory(History),
@@ -163,16 +178,17 @@ public sealed class AppConfig
         History = new HistoryConfig();
         AlwaysOnTop = false;
         PinnedTabs = [];
+        LocalIndexer = new LocalIndexerSettings();
     }
 
     private void CaptureRootConnectionDefaults()
     {
-        _rootConnectionDefaults ??= new ConnectionDefaults(SearchProvider, QsirchEnabled, Host, Port, Ssl, SslVerify, User, Password, CloneSearchService(SearchService));
+        _rootConnectionDefaults ??= new ConnectionDefaults(SearchProvider, QsirchEnabled, Host, Port, Ssl, SslVerify, User, Password, CloneSearchService(SearchService), AdditionalSearchProviders.Select(CloneSearchProvider).ToList());
     }
 
     private void RestoreRootConnectionDefaults()
     {
-        var defaults = _rootConnectionDefaults ?? new ConnectionDefaults(SearchProvider, QsirchEnabled, Host, Port, Ssl, SslVerify, User, Password, CloneSearchService(SearchService));
+        var defaults = _rootConnectionDefaults ?? new ConnectionDefaults(SearchProvider, QsirchEnabled, Host, Port, Ssl, SslVerify, User, Password, CloneSearchService(SearchService), AdditionalSearchProviders.Select(CloneSearchProvider).ToList());
         SearchProvider = Services.SearchProviders.Normalize(defaults.SearchProvider);
         QsirchEnabled = defaults.QsirchEnabled;
         Host = defaults.Host;
@@ -182,6 +198,7 @@ public sealed class AppConfig
         User = defaults.User;
         Password = defaults.Password;
         SearchService = CloneSearchService(defaults.SearchService);
+        AdditionalSearchProviders = defaults.AdditionalSearchProviders.Select(CloneSearchProvider).ToList();
     }
 
     private static void NormalizeRules(ExcludeConfig exclude, bool global)
@@ -227,6 +244,11 @@ public sealed class AppConfig
             host.SearchService.Normalize();
         }
         SearchService.Normalize();
+        NormalizeSearchProviders(AdditionalSearchProviders);
+        foreach (var host in Hosts.Values)
+        {
+            NormalizeSearchProviders(host.AdditionalSearchProviders);
+        }
     }
 
     private bool MigrateStandaloneSearchProvider()
@@ -345,6 +367,28 @@ public sealed class AppConfig
         Token = service.Token,
         ProtectedToken = service.ProtectedToken,
     };
+    private static SearchProviderConnection CloneSearchProvider(SearchProviderConnection provider) => new()
+    {
+        Provider = provider.Provider,
+        Name = provider.Name,
+        Enabled = provider.Enabled,
+        Host = provider.Host,
+        Port = provider.Port,
+        Ssl = provider.Ssl,
+        SslVerify = provider.SslVerify,
+        User = provider.User,
+        Password = provider.Password,
+        Token = provider.Token,
+    };
+    private static LocalIndexerSettings CloneLocalIndexer(LocalIndexerSettings settings) => new() { Enabled = settings.Enabled };
+    private static void NormalizeSearchProviders(List<SearchProviderConnection> providers)
+    {
+        providers.RemoveAll(provider => provider == null);
+        foreach (var provider in providers)
+        {
+            provider.Normalize();
+        }
+    }
     private static ScopedTextRule CloneTextRule(ScopedTextRule rule) => new() { Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
     private static VisibilityRule CloneVisibilityRule(VisibilityRule rule) => new() { Access = rule.Access, Identity = rule.Identity, Pattern = rule.Pattern, IsGlobal = rule.IsGlobal };
     private static PinnedTabConfig ClonePinnedTab(PinnedTabConfig tab) => new() { Title = tab.Title, Query = tab.Query, ViewKey = tab.ViewKey, SortValue = tab.SortValue, TypeIndex = tab.TypeIndex, TypeNames = tab.TypeNames.ToList(), DateFrom = tab.DateFrom, DateTo = tab.DateTo, ExactMatch = tab.ExactMatch, SearchContents = tab.SearchContents, SuppressFolderDates = tab.SuppressFolderDates, RequiredTerms = tab.RequiredTerms.ToList(), AnyTerms = tab.AnyTerms.ToList(), ExcludedTerms = tab.ExcludedTerms.ToList(), ScopePaths = tab.ScopePaths.ToList(), ExcludedScopePaths = tab.ExcludedScopePaths.ToList() };
@@ -436,7 +480,7 @@ public sealed class AppConfig
     }
 
 
-    private sealed record ConnectionDefaults(string SearchProvider, bool QsirchEnabled, string Host, int Port, bool Ssl, bool SslVerify, string User, string Password, SearchServiceConnection SearchService);
+    private sealed record ConnectionDefaults(string SearchProvider, bool QsirchEnabled, string Host, int Port, bool Ssl, bool SslVerify, string User, string Password, SearchServiceConnection SearchService, List<SearchProviderConnection> AdditionalSearchProviders);
 }
 
 public sealed class HostConfig
@@ -468,6 +512,12 @@ public sealed class HostConfig
     [JsonPropertyName("search_service")]
     public SearchServiceConnection SearchService { get; set; } = new();
 
+    [JsonPropertyName("additional_search_providers")]
+    public List<SearchProviderConnection> AdditionalSearchProviders { get; set; } = [];
+
+    [JsonPropertyName("local_indexer")]
+    public LocalIndexerSettings LocalIndexer { get; set; } = new();
+
     [JsonPropertyName("path_mappings")]
     public List<PathMapping> PathMappings { get; set; } = [];
 
@@ -488,6 +538,12 @@ public sealed class HostConfig
 
     [JsonPropertyName("pinned_tabs")]
     public List<PinnedTabConfig> PinnedTabs { get; set; } = [];
+}
+
+public sealed class LocalIndexerSettings
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
 }
 
 public sealed class SearchServiceConnection
@@ -523,6 +579,84 @@ public sealed class SearchServiceConnection
     {
         Host = Services.NasIdentity.NormalizeHost(Host);
         Port = Port is >= 1 and <= 65535 ? Port : 41973;
+    }
+}
+
+public sealed class SearchProviderConnection
+{
+    [JsonPropertyName("provider")]
+    public string Provider { get; set; } = Services.SearchProviders.Qsirch;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("host")]
+    public string Host { get; set; } = "";
+
+    [JsonPropertyName("port")]
+    public int Port { get; set; } = 443;
+
+    [JsonPropertyName("ssl")]
+    public bool Ssl { get; set; } = true;
+
+    [JsonPropertyName("ssl_verify")]
+    public bool SslVerify { get; set; } = true;
+
+    [JsonPropertyName("user")]
+    public string User { get; set; } = "";
+
+    [JsonPropertyName("password")]
+    public string Password { get; set; } = "";
+
+    [JsonPropertyName("token")]
+    public string Token { get; set; } = "";
+
+    [JsonIgnore]
+    public bool IsQsirch => string.Equals(Provider, Services.SearchProviders.Qsirch, StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsQIndexer => Services.SearchProviders.IsStandalone(Provider);
+
+    [JsonIgnore]
+    public bool IsConfigured => Enabled && !string.IsNullOrWhiteSpace(Host) &&
+        (IsQsirch
+            ? !string.IsNullOrWhiteSpace(User) && !string.IsNullOrWhiteSpace(Password)
+            : IsQIndexer && !string.IsNullOrWhiteSpace(Token));
+
+    [JsonIgnore]
+    public string Credential
+    {
+        get => IsQsirch ? Password : Token;
+        set
+        {
+            if (IsQsirch)
+            {
+                Password = value ?? "";
+            }
+            else
+            {
+                Token = value ?? "";
+            }
+        }
+    }
+
+    [JsonIgnore]
+    public string ProviderLabel => IsQsirch ? "Qsirch" : "QIndexer";
+
+    public void Normalize()
+    {
+        Provider = Services.SearchProviders.Normalize(Provider);
+        if (!IsQsirch && !IsQIndexer)
+        {
+            Provider = Services.SearchProviders.Qsirch;
+        }
+        Name = Name.Trim();
+        Host = Services.NasIdentity.NormalizeHost(Host);
+        var defaultPort = IsQIndexer ? 41973 : 443;
+        Port = Port is >= 1 and <= 65535 ? Port : defaultPort;
     }
 }
 

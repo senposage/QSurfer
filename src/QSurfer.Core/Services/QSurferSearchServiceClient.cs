@@ -22,17 +22,19 @@ public sealed class QSurferSearchServiceClient : ISearchProvider
     private readonly string _baseUrl;
     private readonly SemaphoreSlim _rootsGate = new(1, 1);
     private readonly object _availabilityLock = new();
+    private readonly string _providerName;
     private IReadOnlyList<SearchServiceRoot>? _roots;
     private Exception? _recentAvailabilityFailure;
     private DateTimeOffset _retryAfterUtc;
 
     public QSurferSearchServiceClient(AppConfig config)
-        : this(config, null)
+        : this(config, null, null)
     {
     }
 
-    public QSurferSearchServiceClient(AppConfig config, HttpMessageHandler? handler)
+    public QSurferSearchServiceClient(AppConfig config, HttpMessageHandler? handler, string? providerName = null)
     {
+        _providerName = providerName ?? "QIndexer";
         _config = config;
         var service = config.SearchService;
         _baseUrl = $"{(service.Ssl ? "https" : "http")}://{NasIdentity.NormalizeHost(service.Host)}:{service.Port}/v1";
@@ -49,7 +51,7 @@ public sealed class QSurferSearchServiceClient : ISearchProvider
         }
     }
 
-    public string ProviderName => "QIndexer";
+    public string ProviderName => _providerName;
 
     public async Task EnsureAvailableAsync(CancellationToken cancellationToken, SearchProviderScope? scope = null)
     {

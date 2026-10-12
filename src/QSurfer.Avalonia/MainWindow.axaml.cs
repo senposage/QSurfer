@@ -190,6 +190,7 @@ public sealed partial class MainWindow : Window
     }
 
     internal void SetStatus(string message) => _viewModel.StatusMessage(message);
+    internal void ReloadSearchConnection() => _viewModel.ReloadConnection();
 
     internal void HideToTray()
     {
@@ -828,12 +829,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        tab.SelectedSortMode = mode;
-        ClearDetailsGridSorts();
-        AppLogger.Info("sort", $"arrange selected tab=\"{tab.Title}\" mode=\"{mode.Key}\" visible={tab.Results.Count}");
-        // Selection bindings are normally two-way, but this explicit collection reset
-        // guarantees that a user choice immediately redraws the visible rows.
-        tab.RefreshVisibleResults(forceRepaint: true);
+        ApplyArrangeSort(tab, mode);
     }
 
     private void ClearDetailsGridSorts()
@@ -1875,6 +1871,7 @@ public sealed partial class MainWindow : Window
             ? app.ConfigureGlobalHotkey
             : null;
         var settings = new SettingsWindow(_viewModel.Config, configureHotkey);
+        settings.LocalIndexerAvailabilityChanged += (_, _) => _viewModel.ReloadConnection();
         await settings.ShowDialog(this);
         if (settings.Saved)
         {
@@ -2952,16 +2949,43 @@ public sealed partial class MainWindow : Window
         ConfigStore.Save(_viewModel.Config);
     }
 
-    private void DetailsGrid_Sorting(object? sender, DataGridColumnEventArgs e)
+    private void DetailsGrid_Tapped(object? sender, TappedEventArgs e)
     {
-        if (sender is not DataGrid { DataContext: SearchTabViewModel tab } ||
-            string.IsNullOrWhiteSpace(e.Column.SortMemberPath))
+        if (sender is not DataGrid { DataContext: SearchTabViewModel tab } grid ||
+            DetailsColumnFromSource(grid, e.Source) is not { } column ||
+            string.IsNullOrWhiteSpace(column.SortMemberPath))
         {
             return;
         }
 
-        tab.ApplyColumnSort(e.Column.SortMemberPath, _controlKeyDown);
+        // Arrange selects a default ordering. A Details header is always a
+        // direct sorting gesture, so its first click reverses the active order.
+        tab.ApplyColumnSort(column.SortMemberPath, _controlKeyDown);
+        AppLogger.Info("sort", $"details header selected tab=\"{tab.Title}\" column=\"{column.SortMemberPath}\" visible={tab.Results.Count}");
         e.Handled = true;
+    }
+
+    private static DataGridColumn? DetailsColumnFromSource(DataGrid grid, object? source)
+    {
+        var header = source as DataGridColumnHeader ??
+            (source as Visual)?.GetVisualAncestors().OfType<DataGridColumnHeader>().FirstOrDefault();
+        if (header == null)
+        {
+            return null;
+        }
+
+        return header.DataContext as DataGridColumn ??
+            grid.Columns.FirstOrDefault(column => Equals(column.Header, header.Content));
+    }
+
+    private void ApplyArrangeSort(SearchTabViewModel tab, ResultSortMode mode)
+    {
+        tab.SelectedSortMode = mode;
+        ClearDetailsGridSorts();
+        AppLogger.Info("sort", $"arrange selected tab=\"{tab.Title}\" mode=\"{mode.Key}\" visible={tab.Results.Count}");
+        // Selection bindings are normally two-way, but this explicit collection reset
+        // guarantees that a user choice immediately redraws the visible rows.
+        tab.RefreshVisibleResults(forceRepaint: true);
     }
 
     private void ApplyDetailColumnVisibility()

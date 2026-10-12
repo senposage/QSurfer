@@ -724,7 +724,9 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
                 _sortRules.Clear();
                 _sortRules.Add(new SortRule(value.Key, DefaultSortDescending(value.Key)));
                 OnPropertyChanged(nameof(SortSpecification));
-                ApplyFilters();
+                // Results is the shared source for Details, List, Small Icons,
+                // and Large Icons. Reset it so every view redraws immediately.
+                ApplyFilters(forceRepaint: true);
             }
         }
     }
@@ -934,7 +936,10 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(SelectedSortMode));
         }
         OnPropertyChanged(nameof(SortSpecification));
-        ApplyFilters();
+        // Header clicks reorder an existing collection. Avalonia's DataGrid does
+        // not consistently repaint ObservableCollection.Move operations, so use
+        // the same explicit redraw path as the Arrange selector.
+        ApplyFilters(forceRepaint: true);
     }
 
     public void ApplySortSpecification(string? specification)
