@@ -27,12 +27,16 @@ public sealed class LocalIndexerManager : IDisposable
     private static string ExecutableName => OperatingSystem.IsWindows() ? "qindexer.exe" : "qindexer";
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly bool _usePostgres;
+    private readonly string? _progressPath;
 
-    public LocalIndexerManager(HttpClient? httpClient = null, string? stateDirectory = null)
+    public LocalIndexerManager(HttpClient? httpClient = null, string? stateDirectory = null, bool usePostgres = false, string? progressPath = null)
     {
         _http = httpClient ?? CreateHttpClient();
         _ownsHttp = httpClient == null;
         StateDirectory = stateDirectory ?? ResolveStateDirectory();
+        _usePostgres = usePostgres;
+        _progressPath = progressPath;
     }
 
     public string StateDirectory { get; }
@@ -42,15 +46,48 @@ public sealed class LocalIndexerManager : IDisposable
     /// root so release updates cannot overwrite them.
     /// </summary>
     public string ReleaseDirectory => Path.Combine(StateDirectory, "release");
-    public string ExecutablePath => Path.Combine(ReleaseDirectory, ExecutableName);
+    private string ReleaseExecutablePath => Path.Combine(ReleaseDirectory, ExecutableName);
+    private string PackagedExecutablePath => Path.Combine(StateDirectory, "bin", ExecutableName);
+    /// <summary>The QIndexer-owned executable installed by its release package.</summary>
+    public string ExecutablePath => File.Exists(PackagedExecutablePath) ? PackagedExecutablePath : ReleaseExecutablePath;
     private string ToolsDirectory => Path.Combine(StateDirectory, "tools");
     private string NssmPath => Path.Combine(ToolsDirectory, "nssm.exe");
-    public string ConfigPath => Path.Combine(StateDirectory, "config.yaml");
+    private string PackagedConfigPath => Path.Combine(StateDirectory, "configs", "qindexer.yaml");
+    private string LegacyConfigPath => Path.Combine(StateDirectory, "config.yaml");
+    /// <summary>The QIndexer-owned configuration. The legacy path is read only for upgrade compatibility.</summary>
+    public string ConfigPath => File.Exists(PackagedConfigPath) || !File.Exists(LegacyConfigPath)
+        ? PackagedConfigPath
+        : LegacyConfigPath;
     public string DataDirectory => Path.Combine(StateDirectory, "data");
     public string LogsDirectory => Path.Combine(StateDirectory, "logs");
     public string SecretsDirectory => Path.Combine(StateDirectory, "secrets");
-    public string SearchTokenPath => Path.Combine(SecretsDirectory, "search.token");
-    public string AdminTokenPath => Path.Combine(SecretsDirectory, "admin.token");
+    private string SearchTokenPath => Path.Combine(SecretsDirectory, "search.token");
+    private string AdminTokenPath => Path.Combine(SecretsDirectory, "admin.token");
+
+    /// <summary>Returns the catalog mode from QIndexer's own configuration.</summary>
+    public bool? TryGetConfiguredUsePostgres()
+    {
+        try
+        {
+            if (!File.Exists(ConfigPath)) return null;
+            var config = File.ReadAllText(ConfigPath);
+            var index = System.Text.RegularExpressions.Regex.Match(config, @"(?ms)^index:\s*$.*?(?=^\S|\z)");
+            var driver = index.Success
+                ? System.Text.RegularExpressions.Regex.Match(index.Value, @"(?m)^\s+driver:\s*[""']?(?<driver>[^""'\r\n#]+)")
+                : System.Text.RegularExpressions.Match.Empty;
+            if (driver.Success)
+            {
+                return string.Equals(driver.Groups["driver"].Value.Trim(), "postgres", StringComparison.OrdinalIgnoreCase);
+            }
+
+            // QIndexer 1.2.8 and older had no catalog setting and were SQLite-only.
+            return string.Equals(ConfigPath, LegacyConfigPath, StringComparison.OrdinalIgnoreCase) ? false : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Returns the local administration credential for an explicitly requested
@@ -58,7 +95,7 @@ public sealed class LocalIndexerManager : IDisposable
     /// </summary>
     public string? GetAdminTokenForSupport()
     {
-        return File.Exists(AdminTokenPath) ? ReadSecret(AdminTokenPath) : null;
+        return TryReadAuthToken("management");
     }
 
     public static bool IsSupported => OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
@@ -84,22 +121,14 @@ public sealed class LocalIndexerManager : IDisposable
 
         CreateStateDirectories();
         var version = await EnsureLatestInstalledAsync(cancellationToken);
-        if (!File.Exists(ExecutablePath))
+        if (!File.Exists(ReleaseExecutablePath))
         {
             throw new InvalidOperationException("The verified QIndexer package did not produce the QIndexer executable.");
         }
 
-        EnsureToken(SearchTokenPath);
-        EnsureToken(AdminTokenPath);
         if (!File.Exists(ConfigPath))
         {
-            var ports = FindLoopbackPorts();
-            await File.WriteAllTextAsync(
-                ConfigPath,
-                RenderConfig(ports.SearchPort, ports.AdminPort, DataDirectory, DiscoverFixedVolumes()),
-                new UTF8Encoding(false),
-                cancellationToken);
-            RestrictToCurrentUser(ConfigPath);
+            await CreateInitialConfigurationAsync(cancellationToken);
         }
 
         await EnsureLinuxServiceAsync(cancellationToken);
@@ -112,7 +141,7 @@ public sealed class LocalIndexerManager : IDisposable
 
         await StartAsync(cancellationToken, forceWindowsService);
         var health = await WaitForHealthyAsync(cancellationToken);
-        if (health.State != LocalIndexerHealthState.Healthy)
+        if (health.State is not (LocalIndexerHealthState.Healthy or LocalIndexerHealthState.SetupRequired))
         {
             throw new InvalidOperationException(health.Message);
         }
@@ -134,19 +163,14 @@ public sealed class LocalIndexerManager : IDisposable
 
         CreateStateDirectories();
         var installedVersion = await EnsureLatestInstalledAsync(cancellationToken);
-        if (!File.Exists(ExecutablePath))
+        if (!File.Exists(ReleaseExecutablePath))
         {
             throw new InvalidOperationException("The verified QIndexer package did not produce the QIndexer executable.");
         }
 
-        EnsureToken(SearchTokenPath);
-        EnsureToken(AdminTokenPath);
         if (!File.Exists(ConfigPath))
         {
-            var ports = FindLoopbackPorts();
-            var roots = DiscoverFixedVolumes();
-            await File.WriteAllTextAsync(ConfigPath, RenderConfig(ports.SearchPort, ports.AdminPort, DataDirectory, roots), new UTF8Encoding(false), cancellationToken);
-            RestrictToCurrentUser(ConfigPath);
+            await CreateInitialConfigurationAsync(cancellationToken);
         }
 
         if (OperatingSystem.IsLinux())
@@ -168,7 +192,7 @@ public sealed class LocalIndexerManager : IDisposable
     public async Task<LocalIndexerSetupResult> UpgradeAsync(CancellationToken cancellationToken = default)
     {
         EnsureSupported();
-        if (!File.Exists(ConfigPath) || !File.Exists(SearchTokenPath) || !File.Exists(AdminTokenPath))
+        if (!File.Exists(ConfigPath))
         {
             return await EnableAsync(cancellationToken);
         }
@@ -193,6 +217,30 @@ public sealed class LocalIndexerManager : IDisposable
                 Directory.Move(ReleaseDirectory, previous);
             }
             Directory.Move(staging, ReleaseDirectory);
+
+            // QIndexer owns its runtime, PostgreSQL provisioning, and YAML.
+            // Re-run its packaged installer for modern deployments so it
+            // updates the installed binary without QSurfer rewriting those
+            // settings. A legacy SQLite deployment stays on SQLite; 1.2.8
+            // predates the explicit driver setting, so stamp that choice
+            // before starting a 1.2.9+ binary that defaults to PostgreSQL.
+            var currentConfigIsPackaged = string.Equals(ConfigPath, PackagedConfigPath, StringComparison.OrdinalIgnoreCase);
+            if (currentConfigIsPackaged)
+            {
+                await RunPackagedInstallerAsync(cancellationToken);
+            }
+            else if (_usePostgres)
+            {
+                // The user explicitly selected PostgreSQL. Keep the legacy
+                // SQLite files intact, but let QIndexer's package provision a
+                // new private PostgreSQL catalog and configuration.
+                await RunPackagedInstallerAsync(cancellationToken);
+                await SeedLocalRootsAsync(cancellationToken);
+            }
+            else
+            {
+                await PreserveLegacySqliteModeAsync(cancellationToken);
+            }
 
             await StartAsync(cancellationToken);
             var health = await WaitForHealthyAsync(cancellationToken);
@@ -268,9 +316,12 @@ public sealed class LocalIndexerManager : IDisposable
         // earlier QSurfer installer. It never contained the release sidecars.
         TryDeleteFile(Path.Combine(StateDirectory, ExecutableName));
         TryDeleteFile(Path.Combine(StateDirectory, ExecutableName + ".previous"));
-        TryDeleteFile(ConfigPath);
+        TryDeleteFile(PackagedConfigPath);
+        TryDeleteFile(LegacyConfigPath);
         TryDeleteDirectory(SecretsDirectory);
         TryDeleteDirectory(LogsDirectory);
+        TryDeleteDirectory(Path.Combine(StateDirectory, "bin"));
+        TryDeleteDirectory(Path.Combine(StateDirectory, "scripts"));
         if (removeIndexData)
         {
             TryDeleteDirectory(DataDirectory);
@@ -425,15 +476,13 @@ public sealed class LocalIndexerManager : IDisposable
     public SearchServiceConnection? TryGetSearchConnection()
     {
         var ports = TryReadPorts();
-        if (ports == null || !File.Exists(SearchTokenPath))
+        var token = TryReadAuthToken("server");
+        if (ports == null || string.IsNullOrWhiteSpace(token))
         {
             return null;
         }
 
-        var token = ReadSecret(SearchTokenPath);
-        return string.IsNullOrWhiteSpace(token)
-            ? null
-            : new SearchServiceConnection { Enabled = true, Host = "127.0.0.1", Port = ports.Value.SearchPort, Ssl = false, SslVerify = true, Token = token };
+        return new SearchServiceConnection { Enabled = true, Host = "127.0.0.1", Port = ports.Value.SearchPort, Ssl = false, SslVerify = true, Token = token };
     }
 
     public async Task<LocalIndexerStatus> GetStatusAsync(CancellationToken cancellationToken = default)
@@ -459,15 +508,16 @@ public sealed class LocalIndexerManager : IDisposable
         }
 
         var ports = TryReadPorts();
-        if (ports == null || !File.Exists(SearchTokenPath))
+        var searchToken = TryReadAuthToken("server");
+        if (ports == null || string.IsNullOrWhiteSpace(searchToken))
         {
-            return LocalIndexerStatus.HealthUnavailable(StateDirectory, UsesWindowsService(), "The managed configuration is incomplete.");
+            return LocalIndexerStatus.SetupRequired(StateDirectory, UsesWindowsService());
         }
 
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{ports.Value.SearchPort}/v1/health");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ReadSecret(SearchTokenPath));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", searchToken);
             using var response = await _http.SendAsync(request, probeToken);
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
@@ -492,7 +542,7 @@ public sealed class LocalIndexerManager : IDisposable
             }
 
             var details = await ReadAdminStatusAsync(ports.Value.AdminPort, probeToken);
-            return LocalIndexerStatus.Healthy(StateDirectory, UsesWindowsService(), version, count, details.Roots, details.CrawlerState, details.LastError, details.LastCrawl);
+            return LocalIndexerStatus.Healthy(StateDirectory, UsesWindowsService(), version, count, details.IndexSizeBytes, details.Roots, details.CrawlerState, details.LastError, details.LastCrawl);
         }
         catch (HttpRequestException)
         {
@@ -511,7 +561,7 @@ public sealed class LocalIndexerManager : IDisposable
         while (DateTimeOffset.UtcNow < deadline)
         {
             latest = await GetStatusAsync(cancellationToken);
-            if (latest.Health.State == LocalIndexerHealthState.Healthy)
+            if (latest.Health.State is LocalIndexerHealthState.Healthy or LocalIndexerHealthState.SetupRequired)
             {
                 return latest.Health;
             }
@@ -557,77 +607,6 @@ public sealed class LocalIndexerManager : IDisposable
             }
         }
         return volumes.OrderBy(volume => volume.Path, StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    public static string GenerateToken() => Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(32));
-
-    public static string RenderConfig(int searchPort, int adminPort, string dataDirectory, IReadOnlyList<LocalIndexerVolume> volumes)
-    {
-        if (searchPort is < 1 or > 65535 || adminPort is < 1 or > 65535 || searchPort == adminPort)
-        {
-            throw new ArgumentOutOfRangeException(nameof(searchPort), "Two distinct loopback ports are required.");
-        }
-
-        var yaml = new StringBuilder();
-        yaml.AppendLine("server:");
-        yaml.AppendLine($"  bind: \"127.0.0.1:{searchPort}\"");
-        yaml.AppendLine("  bind_addresses:");
-        yaml.AppendLine($"    - \"127.0.0.1:{searchPort}\"");
-        yaml.AppendLine($"  public_base_url: \"http://127.0.0.1:{searchPort}\"");
-        yaml.AppendLine("  auth:");
-        yaml.AppendLine("    mode: \"static-token\"");
-        yaml.AppendLine("    token_file: \"secrets/search.token\"");
-        yaml.AppendLine();
-        yaml.AppendLine("management:");
-        yaml.AppendLine("  enabled: true");
-        yaml.AppendLine($"  bind: \"127.0.0.1:{adminPort}\"");
-        yaml.AppendLine("  bind_addresses:");
-        yaml.AppendLine($"    - \"127.0.0.1:{adminPort}\"");
-        yaml.AppendLine("  auth:");
-        yaml.AppendLine("    mode: \"admin-token\"");
-        yaml.AppendLine("    token_file: \"secrets/admin.token\"");
-        yaml.AppendLine();
-        yaml.AppendLine("index:");
-        yaml.AppendLine($"  data_dir: \"{Yaml(dataDirectory)}\"");
-        yaml.AppendLine();
-        yaml.AppendLine("crawler:");
-        yaml.AppendLine("  adaptive_throttle:");
-        yaml.AppendLine("    enabled: true");
-        yaml.AppendLine("  content_extraction:");
-        yaml.AppendLine("    enabled: false");
-        yaml.AppendLine("  ocr:");
-        yaml.AppendLine("    enabled: false");
-        yaml.AppendLine("  hashing:");
-        yaml.AppendLine("    enabled: false");
-        yaml.AppendLine();
-        yaml.AppendLine("watcher:");
-        yaml.AppendLine("  enabled: true");
-        yaml.AppendLine();
-        yaml.AppendLine("roots:");
-        foreach (var volume in volumes)
-        {
-            yaml.AppendLine($"  - id: \"{Yaml(volume.Id)}\"");
-            yaml.AppendLine($"    name: \"{Yaml(volume.Name)}\"");
-            yaml.AppendLine($"    path: \"{Yaml(volume.Path)}\"");
-            yaml.AppendLine("    enabled: true");
-            yaml.AppendLine("    labels: [\"local\", \"fixed-volume\"]");
-            yaml.AppendLine("    include_extensions: []");
-            yaml.AppendLine("    exclude_extensions: [\"tmp\", \"bak\", \"partial\"]");
-            yaml.AppendLine("    include_file_patterns: []");
-            yaml.AppendLine("    exclude_file_patterns: [\"~$*\", \"*.tmp\", \"*.bak\", \"*.partial\"]");
-            yaml.AppendLine("    include_folder_patterns: []");
-            yaml.AppendLine("    exclude_folder_patterns:");
-            foreach (var pattern in DefaultFolderExclusions)
-            {
-                yaml.AppendLine($"      - \"{pattern}\"");
-            }
-            yaml.AppendLine("    exclude_patterns: []");
-            yaml.AppendLine("    content_extraction: false");
-            yaml.AppendLine("    ocr: false");
-            yaml.AppendLine("    hashing: false");
-            yaml.AppendLine("    collect_ownership: false");
-        }
-        return yaml.ToString();
     }
 
     public static (int SearchPort, int AdminPort) FindLoopbackPorts()
@@ -867,13 +846,32 @@ public sealed class LocalIndexerManager : IDisposable
                             : "Idle";
                 }
             }
-            return new LocalIndexerAdminDetails(roots, string.IsNullOrWhiteSpace(crawlerState) ? "Idle" : crawlerState, lastError, lastCrawl);
+            var indexSizeBytes = await ReadIndexSizeBytesAsync(adminPort, cancellationToken);
+            return new LocalIndexerAdminDetails(roots, string.IsNullOrWhiteSpace(crawlerState) ? "Idle" : crawlerState, lastError, lastCrawl, indexSizeBytes);
         }
         catch
         {
             // Search health remains authoritative. Admin details are additive
             // and must not hide a healthy local search endpoint.
-            return new LocalIndexerAdminDetails([], "Unknown", "", null);
+            return new LocalIndexerAdminDetails([], "Unknown", "", null, null);
+        }
+    }
+
+    private async Task<long?> ReadIndexSizeBytesAsync(int adminPort, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await SendAdminAsync(HttpMethod.Get, "/admin/v1/metrics", null, cancellationToken, adminPort);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            return document.RootElement.TryGetProperty("index_size_bytes", out var size) && size.TryGetInt64(out var value)
+                ? value
+                : null;
+        }
+        catch
+        {
+            // Metrics are informational. A healthy search endpoint should not
+            // look unhealthy just because a version lacks this admin metric.
+            return null;
         }
     }
 
@@ -881,13 +879,14 @@ public sealed class LocalIndexerManager : IDisposable
     {
         var ports = knownAdminPort.HasValue ? (SearchPort: 0, AdminPort: knownAdminPort.Value) : TryReadPorts()
             ?? throw new InvalidOperationException("QIndexer has not been configured yet.");
-        if (!File.Exists(AdminTokenPath))
+        var adminToken = TryReadAuthToken("management");
+        if (string.IsNullOrWhiteSpace(adminToken))
         {
-            throw new InvalidOperationException("QIndexer administration is not configured yet.");
+            throw new InvalidOperationException("Finish local QIndexer setup in its administration page.");
         }
 
         var request = new HttpRequestMessage(method, $"http://127.0.0.1:{ports.AdminPort}{path}");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ReadSecret(AdminTokenPath));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", adminToken);
         if (json != null)
         {
             request.Content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -929,6 +928,37 @@ public sealed class LocalIndexerManager : IDisposable
             config,
             $@"(?ms)^{System.Text.RegularExpressions.Regex.Escape(section)}:\s*$.*?^\s+bind:\s*[\""']?127\.0\.0\.1:(?<port>\d+)[\""']?\s*$");
         return match.Success && int.TryParse(match.Groups["port"].Value, out var port) ? port : null;
+    }
+
+    private string? TryReadAuthToken(string section)
+    {
+        try
+        {
+            if (!File.Exists(ConfigPath)) return null;
+            var config = File.ReadAllText(ConfigPath);
+            var sectionMatch = System.Text.RegularExpressions.Regex.Match(
+                config,
+                $@"(?ms)^{System.Text.RegularExpressions.Regex.Escape(section)}:\s*$.*?(?=^\S|\z)");
+            if (!sectionMatch.Success) return null;
+            var token = System.Text.RegularExpressions.Regex.Match(
+                sectionMatch.Value,
+                "(?m)^\\s+token:\\s*[\"']?(?<token>[^\"'\\r\\n#]+)");
+            var inlineToken = token.Success ? token.Groups["token"].Value.Trim() : null;
+            if (!string.IsNullOrWhiteSpace(inlineToken)) return inlineToken;
+
+            // SQLite is the deliberate portable mode. It keeps its generated
+            // loopback credentials in token files beside the legacy config.
+            var legacyToken = string.Equals(ConfigPath, LegacyConfigPath, StringComparison.OrdinalIgnoreCase)
+                ? string.Equals(section, "management", StringComparison.OrdinalIgnoreCase) ? AdminTokenPath : SearchTokenPath
+                : null;
+            return legacyToken != null && File.Exists(legacyToken)
+                ? File.ReadAllText(legacyToken).Trim()
+                : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
     }
 
     private async Task<bool> IsRunningAsync(CancellationToken cancellationToken)
@@ -1062,7 +1092,14 @@ public sealed class LocalIndexerManager : IDisposable
             var existing = await RunProcessAsync("sc.exe", ["qc", ServiceName], cancellationToken, allowAlreadyRunning: true);
             if (existing.ExitCode == 0 && existing.StandardOutput.Contains(NssmPath, StringComparison.OrdinalIgnoreCase))
             {
+                // An update can move the managed process from the legacy
+                // SQLite layout to QIndexer's package-managed PostgreSQL layout.
+                // Keep the NSSM wrapper, but point it at the active payload/config.
+                await RunProcessAsync(NssmPath, ["set", ServiceName, "Application", ExecutablePath], cancellationToken);
+                await RunProcessAsync(NssmPath, ["set", ServiceName, "AppParameters", $"run --config {ConfigPath}"], cancellationToken);
+                await RunProcessAsync(NssmPath, ["set", ServiceName, "AppDirectory", StateDirectory], cancellationToken);
                 await RunProcessAsync("sc.exe", ["config", ServiceName, "start=", "auto"], cancellationToken);
+                await RunProcessAsync(NssmPath, ["set", ServiceName, "AppExit", "Default", "Restart"], cancellationToken);
                 return;
             }
 
@@ -1192,22 +1229,190 @@ public sealed class LocalIndexerManager : IDisposable
     private void CreateStateDirectories()
     {
         Directory.CreateDirectory(StateDirectory);
+    }
+
+    private async Task CreateInitialConfigurationAsync(CancellationToken cancellationToken)
+    {
+        if (_usePostgres)
+        {
+            // The QIndexer package provisions PostgreSQL and its private DSN.
+            // QSurfer never constructs, stores, or exports either value.
+            await RunPackagedInstallerAsync(cancellationToken);
+            await SeedLocalRootsAsync(cancellationToken);
+            return;
+        }
+
         Directory.CreateDirectory(DataDirectory);
-        Directory.CreateDirectory(LogsDirectory);
         Directory.CreateDirectory(SecretsDirectory);
-        RestrictToCurrentUser(SecretsDirectory);
+        EnsureToken(SearchTokenPath);
+        EnsureToken(AdminTokenPath);
+        var ports = FindLoopbackPorts();
+        await File.WriteAllTextAsync(
+            LegacyConfigPath,
+            RenderSqliteConfig(ports.SearchPort, ports.AdminPort, DataDirectory, DiscoverFixedVolumes()),
+            new UTF8Encoding(false),
+            cancellationToken);
+        RestrictToCurrentUser(LegacyConfigPath);
+    }
+
+    private async Task PreserveLegacySqliteModeAsync(CancellationToken cancellationToken)
+    {
+        if (!File.Exists(LegacyConfigPath))
+        {
+            return;
+        }
+
+        var config = await File.ReadAllTextAsync(LegacyConfigPath, cancellationToken);
+        var indexHeader = System.Text.RegularExpressions.Regex.Match(config, @"(?m)^index:\s*\r?$");
+        if (!indexHeader.Success)
+        {
+            throw new InvalidOperationException("The legacy QIndexer configuration has no index section.");
+        }
+
+        var nextSection = new System.Text.RegularExpressions.Regex(@"(?m)^\S[^\r\n]*:\s*$")
+            .Match(config, indexHeader.Index + indexHeader.Length);
+        var indexBodyEnd = nextSection.Success ? nextSection.Index : config.Length;
+        var indexBody = config[indexHeader.Index..indexBodyEnd];
+        if (System.Text.RegularExpressions.Regex.IsMatch(indexBody, @"(?m)^\s{2,}database:\s*$"))
+        {
+            return;
+        }
+
+        var lineBreak = config.IndexOf('\n', indexHeader.Index);
+        var insertAt = lineBreak >= 0 ? lineBreak + 1 : config.Length;
+        var lineEnding = config.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        config = config.Insert(insertAt, $"  database:{lineEnding}    driver: sqlite{lineEnding}");
+        await File.WriteAllTextAsync(LegacyConfigPath, config, new UTF8Encoding(false), cancellationToken);
+        RestrictToCurrentUser(LegacyConfigPath);
+    }
+
+    private async Task SeedLocalRootsAsync(CancellationToken cancellationToken)
+    {
+        if (!File.Exists(PackagedConfigPath))
+        {
+            throw new InvalidOperationException("The QIndexer package did not create its configuration.");
+        }
+
+        var config = await File.ReadAllTextAsync(PackagedConfigPath, cancellationToken);
+        var roots = System.Text.RegularExpressions.Regex.Match(config, @"(?m)^roots:\s*$");
+        if (!roots.Success)
+        {
+            throw new InvalidOperationException("The QIndexer package configuration has no roots section.");
+        }
+
+        // Roots are the final section of the shipped config. Preserve every
+        // preceding QIndexer-owned setting, especially the provisioned DSN.
+        var generated = config[..roots.Index] + "roots:" + Environment.NewLine + RenderRootEntries(DiscoverFixedVolumes());
+        await File.WriteAllTextAsync(PackagedConfigPath, generated, new UTF8Encoding(false), cancellationToken);
+    }
+
+    private static string RenderSqliteConfig(int searchPort, int adminPort, string dataDirectory, IReadOnlyList<LocalIndexerVolume> volumes)
+    {
+        if (searchPort is < 1 or > 65535 || adminPort is < 1 or > 65535 || searchPort == adminPort)
+        {
+            throw new ArgumentOutOfRangeException(nameof(searchPort), "Two distinct loopback ports are required.");
+        }
+
+        return $"""
+            server:
+              bind: "127.0.0.1:{searchPort}"
+              bind_addresses:
+                - "127.0.0.1:{searchPort}"
+              public_base_url: "http://127.0.0.1:{searchPort}"
+              auth:
+                mode: "static-token"
+                token_file: "secrets/search.token"
+
+            management:
+              enabled: true
+              bind: "127.0.0.1:{adminPort}"
+              bind_addresses:
+                - "127.0.0.1:{adminPort}"
+              auth:
+                mode: "admin-token"
+                token_file: "secrets/admin.token"
+
+            index:
+              data_dir: "{Yaml(dataDirectory)}"
+              database:
+                driver: "sqlite"
+
+            watcher:
+              enabled: true
+
+            roots:
+            {RenderRootEntries(volumes)}
+            """;
+    }
+
+    private static string RenderRootEntries(IReadOnlyList<LocalIndexerVolume> volumes)
+    {
+        var yaml = new StringBuilder();
+        foreach (var volume in volumes)
+        {
+            yaml.AppendLine($"  - id: \"{Yaml(volume.Id)}\"");
+            yaml.AppendLine($"    name: \"{Yaml(volume.Name)}\"");
+            yaml.AppendLine($"    path: \"{Yaml(volume.Path)}\"");
+            yaml.AppendLine("    enabled: true");
+            yaml.AppendLine("    labels: [\"local\", \"fixed-volume\"]");
+            yaml.AppendLine("    exclude_folder_patterns: [\"**/.git/**\", \"**/node_modules/**\", \"**/@Recently-Snapshot/**\", \"**/@Recycle/**\", \"**/#recycle/**\", \"**/$RECYCLE.BIN/**\", \"**/RECYCLER/**\"]");
+        }
+        return yaml.ToString();
     }
 
     private static void EnsureToken(string path)
     {
-        if (!File.Exists(path) || string.IsNullOrWhiteSpace(ReadSecret(path)))
+        if (!File.Exists(path) || string.IsNullOrWhiteSpace(File.ReadAllText(path)))
         {
-            File.WriteAllText(path, GenerateToken(), new UTF8Encoding(false));
+            File.WriteAllText(path, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_'), new UTF8Encoding(false));
         }
         RestrictToCurrentUser(path);
     }
 
-    private static string ReadSecret(string path) => File.ReadAllText(path).Trim();
+    private async Task RunPackagedInstallerAsync(CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var installer = Path.Combine(ReleaseDirectory, "scripts", "install-qindexer.ps1");
+            if (!File.Exists(installer))
+            {
+                throw new InvalidOperationException("The QIndexer package does not include its Windows installer.");
+            }
+            var arguments = new List<string>
+            {
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installer,
+                "-InstallDir", StateDirectory, "-BinaryPath", ReleaseExecutablePath,
+            };
+            if (!string.IsNullOrWhiteSpace(_progressPath))
+            {
+                arguments.Add("-ProgressPath");
+                arguments.Add(_progressPath);
+            }
+            arguments.Add("-ServiceName");
+            arguments.Add(ServiceName);
+            await RunProcessAsync("powershell.exe", arguments, cancellationToken);
+            return;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var installer = Path.Combine(ReleaseDirectory, "scripts", "install-qindexer-linux.sh");
+            if (!File.Exists(installer))
+            {
+                throw new InvalidOperationException("The QIndexer package does not include its Linux installer.");
+            }
+            var arguments = new List<string> { installer, "--install-dir", StateDirectory, "--binary", ReleaseExecutablePath };
+            if (!string.IsNullOrWhiteSpace(_progressPath))
+            {
+                arguments.Add("--progress-file");
+                arguments.Add(_progressPath);
+            }
+            await RunProcessAsync("bash", arguments, cancellationToken);
+            return;
+        }
+
+        throw new PlatformNotSupportedException("QIndexer package installation is not supported on this operating system.");
+    }
 
     private static void RestrictToCurrentUser(string path)
     {
@@ -1347,6 +1552,8 @@ public sealed class LocalIndexerManager : IDisposable
         throw new CryptographicException("SHA256SUMS does not contain the downloaded QIndexer package.");
     }
 
+    private static string Yaml(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+
     private static int FindLoopbackPort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -1355,7 +1562,6 @@ public sealed class LocalIndexerManager : IDisposable
     }
 
     private static bool IsDriveLetterRoot(string path) => path.Length == 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/');
-    private static string Yaml(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
     private static string? TryGetVolumeGuid(string root)
     {
         var buffer = new StringBuilder(260);
@@ -1401,8 +1607,6 @@ public sealed class LocalIndexerManager : IDisposable
     }
     private static void EnsureSupported() { if (!IsSupported) throw new PlatformNotSupportedException("Local QIndexer management is supported on Windows and Linux only."); }
 
-    private static readonly string[] DefaultFolderExclusions = ["**/.git/**", "**/node_modules/**", "**/tmp/**", "**/.qsurfer/**", "**/@Recently-Snapshot/**", "**/@Recycle/**", "**/#recycle/**", "**/$RECYCLE.BIN/**", "**/RECYCLER/**", "**/.sync/**", "**/.qsync/**", "**/.qsync_sn/**"];
-
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool GetVolumeNameForVolumeMountPoint(string mountPoint, StringBuilder volumeName, int length);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -1413,9 +1617,8 @@ public sealed class LocalIndexerManager : IDisposable
 
     private sealed record DownloadedRelease(string Version, string TemporaryDirectory, string PayloadDirectory);
     private sealed record ProcessResult(int ExitCode, string StandardOutput);
-    private sealed record LocalIndexerAdminDetails(IReadOnlyList<LocalIndexerRootStatus> Roots, string CrawlerState, string LastError, DateTimeOffset? LastCrawl);
+    private sealed record LocalIndexerAdminDetails(IReadOnlyList<LocalIndexerRootStatus> Roots, string CrawlerState, string LastError, DateTimeOffset? LastCrawl, long? IndexSizeBytes);
 }
-
 public sealed record LocalIndexerVolume(string Id, string Name, string Path, string StableIdentity);
 public sealed record LocalIndexerRootStatus(string Id, string Name, string State, long DocumentCount, DateTimeOffset? LastCrawl, string Error);
 public sealed record LocalIndexerHealth(LocalIndexerHealthState State, string Message);
@@ -1429,30 +1632,27 @@ public enum LocalIndexerHealthState
     HealthUnavailable,
     AuthenticationFailed,
     IndexUnavailable,
+    SetupRequired,
     Healthy,
 }
-
 public sealed record LocalIndexerStatus(
     LocalIndexerHealth Health,
     string? Version,
     string StateDirectory,
     bool UsesWindowsService,
     long DocumentCount,
+    long? IndexSizeBytes,
     IReadOnlyList<LocalIndexerRootStatus> Roots,
     string CrawlerState,
     string LastError,
     DateTimeOffset? LastCrawl)
 {
-    public static LocalIndexerStatus Unsupported() => new(new(LocalIndexerHealthState.Unsupported, "Local QIndexer management is available on Windows only."), null, "", false, 0, [], "", "", null);
-    public static LocalIndexerStatus NotInstalled(string directory) => new(new(LocalIndexerHealthState.NotInstalled, "QIndexer is not installed."), null, directory, false, 0, [], "", "", null);
-    public static LocalIndexerStatus ProcessUnavailable(string directory, bool service) => new(new(LocalIndexerHealthState.ProcessUnavailable, "QIndexer is installed but not running."), null, directory, service, 0, [], "", "", null);
-    public static LocalIndexerStatus HealthUnavailable(string directory, bool service, string message) => new(new(LocalIndexerHealthState.HealthUnavailable, message), null, directory, service, 0, [], "", "", null);
-    public static LocalIndexerStatus AuthenticationFailed(string directory, bool service) => new(new(LocalIndexerHealthState.AuthenticationFailed, "QIndexer rejected its managed loopback credential."), null, directory, service, 0, [], "", "", null);
-    public static LocalIndexerStatus IndexUnavailable(string directory, bool service, string version, long documents) => new(new(LocalIndexerHealthState.IndexUnavailable, "QIndexer is running but its index is not ready."), version, directory, service, documents, [], "", "", null);
-    public static LocalIndexerStatus Healthy(string directory, bool service, string version, long documents, IReadOnlyList<LocalIndexerRootStatus> roots, string crawlerState, string error, DateTimeOffset? lastCrawl) => new(new(LocalIndexerHealthState.Healthy, "QIndexer is healthy."), version, directory, service, documents, roots, crawlerState, error, lastCrawl);
-}
-
-internal static class Base64UrlEncoder
-{
-    public static string Encode(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    public static LocalIndexerStatus Unsupported() => new(new(LocalIndexerHealthState.Unsupported, "Local QIndexer management is available on Windows only."), null, "", false, 0, null, [], "", "", null);
+    public static LocalIndexerStatus NotInstalled(string directory) => new(new(LocalIndexerHealthState.NotInstalled, "QIndexer is not installed."), null, directory, false, 0, null, [], "", "", null);
+    public static LocalIndexerStatus ProcessUnavailable(string directory, bool service) => new(new(LocalIndexerHealthState.ProcessUnavailable, "QIndexer is installed but not running."), null, directory, service, 0, null, [], "", "", null);
+    public static LocalIndexerStatus HealthUnavailable(string directory, bool service, string message) => new(new(LocalIndexerHealthState.HealthUnavailable, message), null, directory, service, 0, null, [], "", "", null);
+    public static LocalIndexerStatus AuthenticationFailed(string directory, bool service) => new(new(LocalIndexerHealthState.AuthenticationFailed, "QIndexer rejected its managed loopback credential."), null, directory, service, 0, null, [], "", "", null);
+    public static LocalIndexerStatus IndexUnavailable(string directory, bool service, string version, long documents) => new(new(LocalIndexerHealthState.IndexUnavailable, "QIndexer is running but its index is not ready."), version, directory, service, documents, null, [], "", "", null);
+    public static LocalIndexerStatus SetupRequired(string directory, bool service) => new(new(LocalIndexerHealthState.SetupRequired, "QIndexer is running. Open advanced administration to set its first token."), null, directory, service, 0, null, [], "", "", null);
+    public static LocalIndexerStatus Healthy(string directory, bool service, string version, long documents, long? indexSizeBytes, IReadOnlyList<LocalIndexerRootStatus> roots, string crawlerState, string error, DateTimeOffset? lastCrawl) => new(new(LocalIndexerHealthState.Healthy, "QIndexer is healthy."), version, directory, service, documents, indexSizeBytes, roots, crawlerState, error, lastCrawl);
 }

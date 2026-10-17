@@ -45,10 +45,10 @@
         <TextBlock Text="You are ready. Open Help anytime for the complete guide to settings, recovery policy, file operations, shortcuts, and troubleshooting." TextWrapping="Wrap" Classes="help-copy" />
       </StackPanel>
       <StackPanel x:Name="UpdatePage" IsVisible="False" Spacing="14">
-        <TextBlock Text="Scope folders now stay in sync" Classes="help-topic-title" />
-        <TextBlock Text="The folder list below a search now clearly marks included folders in accent color and excluded folders in gray. Each row shows its own matching count, and changing a row automatically refreshes the search so newly included folders can return results." TextWrapping="Wrap" Classes="help-copy" />
-        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Search state follows the search" FontWeight="SemiBold" /><TextBlock Text="Recent searches now restore the full search exactly as it ran: filters, dates, Boolean terms, arrangement, view, and included or excluded folders. They open in their own tab rather than inheriting the tab you were using." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
-        <TextBlock Text="Tabs now reliably return to their own Search or Browse view when you switch between them. On Windows, Navigation also notices when a mapped drive finishes reconnecting after QSurfer starts and updates the UNC entry to its drive view." TextWrapping="Wrap" Classes="help-copy" />
+        <TextBlock Text="Local QIndexer is ready from Settings" Classes="help-topic-title" />
+        <TextBlock Text="QSurfer can now download, install, start, update, and check a local QIndexer service from Settings. It configures a private loopback connection automatically, while your Qsirch connections remain separate and can still be used alongside it." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Choose your local catalog" FontWeight="SemiBold" /><TextBlock Text="Local QIndexer can use SQLite by default or PostgreSQL when enabled. Existing SQLite data stays in place when you switch, and QIndexer handles its own protected configuration and credentials." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Boolean search filters now have a clearer Apply and Clear workflow. QSurfer also checks GitHub for a newer QSurfer release after startup; it only offers to open the release page and never downloads or installs an update on its own." TextWrapping="Wrap" Classes="help-copy" />
         <TextBlock Text="Open Help anytime for the full reference." TextWrapping="Wrap" Classes="help-copy" />
       </StackPanel>
     </Grid>

@@ -5,6 +5,8 @@ namespace QSurfer.Avalonia;
 
 public sealed partial class ConfirmationWindow : Window
 {
+    public event EventHandler? Confirmed;
+
     public ConfirmationWindow(string title, string message, string action, string cancelAction = "Cancel")
     {
         InitializeComponent();
@@ -14,7 +16,11 @@ public sealed partial class ConfirmationWindow : Window
         CancelButton.Content = cancelAction;
     }
 
-    private void Confirm_Click(object? sender, RoutedEventArgs e) => Close(true);
+    private void Confirm_Click(object? sender, RoutedEventArgs e)
+    {
+        Confirmed?.Invoke(this, EventArgs.Empty);
+        Close(true);
+    }
 
     private void Cancel_Click(object? sender, RoutedEventArgs e) => Close(false);
 }

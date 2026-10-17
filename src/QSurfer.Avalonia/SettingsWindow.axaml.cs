@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -23,6 +24,9 @@ public sealed partial class SettingsWindow : Window
     private static readonly TimeSpan EscapeClearDelay = TimeSpan.FromMilliseconds(650);
     private bool _updatingThemeColors;
     private bool _applyingThemePreset;
+    private bool _synchronizingLocalIndexerCatalogMode;
+    private bool _localIndexerCatalogUpdateInProgress;
+    private bool _localIndexerAdministrationOpened;
     private LocalIndexerManager? _localIndexer;
 
     public SettingsWindow() : this(new AppConfig(), null)
@@ -44,6 +48,13 @@ public sealed partial class SettingsWindow : Window
             FitToCurrentDisplay();
             AppLogger.Info("settings", "settings opened; refreshing local QIndexer status");
             await RefreshLocalIndexerStatusAsync();
+        };
+        Activated += async (_, _) =>
+        {
+            if (_localIndexerAdministrationOpened)
+            {
+                await RefreshLocalIndexerStatusAsync();
+            }
         };
         Closed += (_, _) => ResetLocalIndexerManager();
 
@@ -93,6 +104,8 @@ public sealed partial class SettingsWindow : Window
         ShowLocalNavigationDrivesBox.IsChecked = config.Behavior.ShowLocalNavigationDrives;
         UseThumbnailsBox.IsChecked = config.Behavior.UseQsirchThumbnails;
         LocalIndexerEnabledBox.IsChecked = config.LocalIndexer.Enabled;
+        LocalIndexerUsePostgresBox.IsChecked = config.LocalIndexer.UsePostgres;
+        LocalIndexerUsePostgresBox.IsCheckedChanged += LocalIndexerUsePostgresBox_IsCheckedChanged;
         ResultLimitBox.Text = Math.Max(config.Behavior.MaxSearchResults, 50).ToString();
         SearchTimeoutBox.Text = Math.Clamp(config.Behavior.SearchTimeoutSeconds, 10, 300).ToString();
         FirstPageSizeBox.Text = Math.Clamp(config.Behavior.FirstPageSize, 5, 500).ToString();
@@ -268,6 +281,7 @@ public sealed partial class SettingsWindow : Window
             .Select(CloneProvider)
             .ToList();
         _config.LocalIndexer.Enabled = LocalIndexerEnabledBox.IsChecked == true;
+        _config.LocalIndexer.UsePostgres = LocalIndexerUsePostgresBox.IsChecked == true;
         _config.AlwaysOnTop = AlwaysOnTopBox.IsChecked == true;
         _config.Behavior.ShowInTaskbar = ShowInTaskbarBox.IsChecked == true;
         _config.Behavior.MinimizeToTray = MinimizeToTrayBox.IsChecked == true;
@@ -344,6 +358,10 @@ public sealed partial class SettingsWindow : Window
             return;
         }
 
+        var usePostgres = LocalIndexerUsePostgresBox.IsChecked == true;
+        _config.LocalIndexer.UsePostgres = usePostgres;
+        ConfigStore.Save(_config);
+
         if (OperatingSystem.IsLinux())
         {
             var linuxConfirmation = new ConfirmationWindow(
@@ -351,13 +369,13 @@ public sealed partial class SettingsWindow : Window
             "QSurfer will download the latest verified QIndexer release from GitHub, then ask the system for permission to install and start its boot-time systemd service. Its configuration and index stay in your QSurfer data folder.",
                 "Continue");
             if (await linuxConfirmation.ShowDialog<bool?>(this) != true) return;
-            await RunLinuxIndexerCommandAsync("--install-local-indexer-service", "Linux service setup did not finish. The existing QIndexer state was left unchanged.");
+            await RunLinuxIndexerCommandAsync("--install-local-indexer-service", "Linux service setup did not finish. The existing QIndexer state was left unchanged.", !usePostgres);
             return;
         }
 
         if (LocalIndexerManager.IsElevated())
         {
-            await InstallLocalIndexerAsync(new LocalIndexerManager(stateDirectory: LocalIndexerManager.MachineStateRoot));
+            await InstallLocalIndexerAsync(new LocalIndexerManager(stateDirectory: LocalIndexerManager.MachineStateRoot, usePostgres: usePostgres));
             return;
         }
 
@@ -372,6 +390,7 @@ public sealed partial class SettingsWindow : Window
 
         try
         {
+            var progressPath = CreateLocalIndexerProgressPath();
             var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for service setup.");
             var startInfo = new ProcessStartInfo(executable)
             {
@@ -382,9 +401,14 @@ public sealed partial class SettingsWindow : Window
                 WindowStyle = ProcessWindowStyle.Hidden,
             };
             startInfo.ArgumentList.Add("--install-local-indexer-service");
+            startInfo.ArgumentList.Add("--local-indexer-progress");
+            startInfo.ArgumentList.Add(progressPath);
+            if (!usePostgres)
+            {
+                startInfo.ArgumentList.Add("--local-indexer-sqlite");
+            }
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Windows did not start the elevated service installer.");
-            await process.WaitForExitAsync();
-            if (process.ExitCode != 0)
+            if (await WaitForLocalIndexerHelperAsync(process, progressPath) != 0)
             {
                 LocalIndexerStatusText.Text = "Windows service setup was cancelled or did not finish.";
                 return;
@@ -532,41 +556,78 @@ public sealed partial class SettingsWindow : Window
         }
     }
 
-    private async void UpdateLocalIndexer_Click(object? sender, RoutedEventArgs e)
+    private async void LocalIndexerUsePostgresBox_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_synchronizingLocalIndexerCatalogMode || _localIndexerCatalogUpdateInProgress || !IsVisible)
+        {
+            return;
+        }
+
+        var installedMode = GetLocalIndexer().TryGetConfiguredUsePostgres();
+        var requestedMode = LocalIndexerUsePostgresBox.IsChecked == true;
+        if (!installedMode.HasValue || installedMode.Value == requestedMode)
+        {
+            _config.LocalIndexer.UsePostgres = requestedMode;
+            ConfigStore.Save(_config);
+            return;
+        }
+
+        _localIndexerCatalogUpdateInProgress = true;
+        var updated = await UpdateLocalIndexerAsync();
+        _localIndexerCatalogUpdateInProgress = false;
+        if (!updated)
+        {
+            SetLocalIndexerCatalogMode(installedMode.Value);
+        }
+    }
+
+    private async void UpdateLocalIndexer_Click(object? sender, RoutedEventArgs e) => await UpdateLocalIndexerAsync();
+
+    private async Task<bool> UpdateLocalIndexerAsync()
     {
         try
         {
             if (!LocalIndexerManager.IsSupported)
             {
                 LocalIndexerStatusText.Text = "Local QIndexer management is not supported on this operating system.";
-                return;
+                return false;
             }
+
+            var usePostgres = LocalIndexerUsePostgresBox.IsChecked == true;
+            var catalogMessage = usePostgres
+                ? " PostgreSQL will be provisioned as a new catalog; the existing SQLite index will be kept but not migrated."
+                : " The existing SQLite catalog and configuration will be retained.";
 
             if (OperatingSystem.IsLinux())
             {
                 var confirmation = new ConfirmationWindow(
                     "Update local QIndexer service",
-                    "QSurfer will download the latest verified QIndexer release from GitHub, then restart the Linux service. Its configuration, index, and tokens will be retained.",
+                    "QSurfer will download the latest verified QIndexer release from GitHub, then restart the Linux service." + catalogMessage,
                     "Update service");
-                if (await confirmation.ShowDialog<bool?>(this) != true) return;
+                if (await confirmation.ShowDialog<bool?>(this) != true) return false;
+                _config.LocalIndexer.UsePostgres = usePostgres;
+                ConfigStore.Save(_config);
+                ResetLocalIndexerManager();
                 await GetLocalIndexer().UpgradeAsync();
                 SetLocalIndexerEnabled(true);
                 LocalIndexerStatusText.Text = "Local QIndexer update completed.";
                 await RefreshLocalIndexerStatusAsync();
-                return;
+                return true;
             }
 
             if (!LocalIndexerManager.IsElevated())
             {
                 var confirmation = new ConfirmationWindow(
                     "Update local QIndexer service",
-                    "Windows will ask for permission to stop, update, and restart QSurfer's local QIndexer service. Its configuration, index, and tokens will be retained.",
+                    "Windows will ask for permission to stop, update, and restart QSurfer's local QIndexer service." + catalogMessage,
                     "Update service");
                 if (await confirmation.ShowDialog<bool?>(this) != true)
                 {
-                    return;
+                    return false;
                 }
 
+                _config.LocalIndexer.UsePostgres = usePostgres;
+                ConfigStore.Save(_config);
                 var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for service update.");
                 var startInfo = new ProcessStartInfo(executable)
                 {
@@ -575,33 +636,59 @@ public sealed partial class SettingsWindow : Window
                     WindowStyle = ProcessWindowStyle.Hidden,
                 };
                 startInfo.ArgumentList.Add("--upgrade-local-indexer-service");
+                var progressPath = CreateLocalIndexerProgressPath();
+                startInfo.ArgumentList.Add("--local-indexer-progress");
+                startInfo.ArgumentList.Add(progressPath);
+                if (!usePostgres)
+                {
+                    startInfo.ArgumentList.Add("--local-indexer-sqlite");
+                }
                 using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Windows did not start the elevated service updater.");
-                await process.WaitForExitAsync();
-                if (process.ExitCode != 0)
+                if (await WaitForLocalIndexerHelperAsync(process, progressPath) != 0)
                 {
                     LocalIndexerStatusText.Text = "Windows service update was cancelled or did not finish. The previous executable and index were retained.";
-                    return;
+                    return false;
                 }
             }
             else
             {
+                _config.LocalIndexer.UsePostgres = usePostgres;
+                ConfigStore.Save(_config);
+                ResetLocalIndexerManager();
                 await GetLocalIndexer().UpgradeAsync();
             }
             SetLocalIndexerEnabled(true);
             LocalIndexerStatusText.Text = "Local QIndexer update completed.";
             await RefreshLocalIndexerStatusAsync();
+            return true;
         }
         catch (Win32Exception)
         {
             LocalIndexerStatusText.Text = "Windows elevation was cancelled. The existing QIndexer executable and index were retained.";
+            return false;
         }
         catch
         {
             LocalIndexerStatusText.Text = "QIndexer could not be updated. Its previous executable and index were retained.";
+            return false;
         }
     }
 
     private async void RefreshLocalIndexer_Click(object? sender, RoutedEventArgs e) => await RefreshLocalIndexerStatusAsync();
+
+    private void SetLocalIndexerCatalogMode(bool usePostgres)
+    {
+        _synchronizingLocalIndexerCatalogMode = true;
+        try
+        {
+            LocalIndexerUsePostgresBox.IsChecked = usePostgres;
+            _config.LocalIndexer.UsePostgres = usePostgres;
+        }
+        finally
+        {
+            _synchronizingLocalIndexerCatalogMode = false;
+        }
+    }
 
     private async void PauseLocalIndexer_Click(object? sender, RoutedEventArgs e)
     {
@@ -655,6 +742,7 @@ public sealed partial class SettingsWindow : Window
     {
         try
         {
+            _localIndexerAdministrationOpened = true;
             GetLocalIndexer().OpenAdvancedAdministration();
         }
         catch
@@ -677,11 +765,75 @@ public sealed partial class SettingsWindow : Window
         LocalIndexerStatusText.Text = "Local QIndexer admin token copied. Paste it into the advanced administration page.";
     }
 
-    private async Task RunLinuxIndexerCommandAsync(string command, string failureMessage)
+    private static string CreateLocalIndexerProgressPath()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "QSurfer");
+        Directory.CreateDirectory(directory);
+        return Path.Combine(directory, $"qindexer-setup-{Guid.NewGuid():N}.json");
+    }
+
+    private async Task<int> WaitForLocalIndexerHelperAsync(Process process, string progressPath)
+    {
+        try
+        {
+            while (!process.HasExited)
+            {
+                DisplayLocalIndexerSetupProgress(progressPath);
+                await Task.Delay(200);
+            }
+            DisplayLocalIndexerSetupProgress(progressPath);
+            return process.ExitCode;
+        }
+        finally
+        {
+            TryDeleteProgressFile(progressPath);
+        }
+    }
+
+    private void DisplayLocalIndexerSetupProgress(string progressPath)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(progressPath));
+            var root = document.RootElement;
+            var stage = root.TryGetProperty("stage", out var stageValue) ? stageValue.GetString() : null;
+            var message = root.TryGetProperty("message", out var messageValue) ? messageValue.GetString() : null;
+            var percent = root.TryGetProperty("percent", out var percentValue) && percentValue.TryGetInt32(out var parsedPercent)
+                ? $" ({parsedPercent}%)"
+                : "";
+            if (!string.IsNullOrWhiteSpace(message) || !string.IsNullOrWhiteSpace(stage))
+            {
+                LocalIndexerStatusText.Text = "QIndexer setup: " + (message ?? stage) + percent;
+            }
+        }
+        catch (IOException)
+        {
+            // The installer writes atomically; a read can race its rename.
+        }
+        catch (JsonException)
+        {
+            // Ignore a partially written progress document and try again.
+        }
+    }
+
+    private static void TryDeleteProgressFile(string progressPath)
+    {
+        try
+        {
+            if (File.Exists(progressPath)) File.Delete(progressPath);
+        }
+        catch (IOException)
+        {
+            // Progress files are disposable and may briefly be held by the helper.
+        }
+    }
+
+    private async Task RunLinuxIndexerCommandAsync(string command, string failureMessage, bool useSqlite = false)
     {
         try
         {
             var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for Linux service setup.");
+            var progressPath = CreateLocalIndexerProgressPath();
             var startInfo = new ProcessStartInfo("pkexec")
             {
                 UseShellExecute = false,
@@ -689,9 +841,14 @@ public sealed partial class SettingsWindow : Window
             };
             startInfo.ArgumentList.Add(executable);
             startInfo.ArgumentList.Add(command);
+            startInfo.ArgumentList.Add("--local-indexer-progress");
+            startInfo.ArgumentList.Add(progressPath);
+            if (useSqlite)
+            {
+                startInfo.ArgumentList.Add("--local-indexer-sqlite");
+            }
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Linux did not start the privileged service helper.");
-            await process.WaitForExitAsync();
-            if (process.ExitCode != 0)
+            if (await WaitForLocalIndexerHelperAsync(process, progressPath) != 0)
             {
                 LocalIndexerStatusText.Text = failureMessage;
                 return;
@@ -701,12 +858,14 @@ public sealed partial class SettingsWindow : Window
             var manager = GetLocalIndexer();
             await manager.StartAsync();
             var health = await manager.WaitForHealthyAsync(CancellationToken.None);
-            if (health.State != LocalIndexerHealthState.Healthy)
+            if (health.State is not (LocalIndexerHealthState.Healthy or LocalIndexerHealthState.SetupRequired))
             {
                 throw new InvalidOperationException(health.Message);
             }
             SetLocalIndexerEnabled(true);
-            LocalIndexerStatusText.Text = "Local QIndexer service is installed and healthy.";
+            LocalIndexerStatusText.Text = health.State == LocalIndexerHealthState.SetupRequired
+                ? "Local QIndexer service is running. Set its first token in advanced administration."
+                : "Local QIndexer service is installed and healthy.";
             await RefreshLocalIndexerStatusAsync();
         }
         catch
@@ -723,7 +882,9 @@ public sealed partial class SettingsWindow : Window
             _localIndexer = manager;
             var setup = await manager.EnableAsync(forceWindowsService: OperatingSystem.IsWindows());
             SetLocalIndexerEnabled(true);
-            LocalIndexerStatusText.Text = $"Local QIndexer {setup.Version} is installed, running, and healthy.";
+            LocalIndexerStatusText.Text = setup.Health.State == LocalIndexerHealthState.SetupRequired
+                ? $"Local QIndexer {setup.Version} is running. Set its first token in advanced administration."
+                : $"Local QIndexer {setup.Version} is installed, running, and healthy.";
             await RefreshLocalIndexerStatusAsync();
         }
         catch
@@ -740,7 +901,7 @@ public sealed partial class SettingsWindow : Window
         _localIndexer = manager;
         await manager.StartAsync(forceWindowsService: forceWindowsService);
         var health = await manager.WaitForHealthyAsync(CancellationToken.None);
-        if (health.State != LocalIndexerHealthState.Healthy)
+        if (health.State is not (LocalIndexerHealthState.Healthy or LocalIndexerHealthState.SetupRequired))
         {
             throw new InvalidOperationException(health.Message);
         }
@@ -772,13 +933,30 @@ public sealed partial class SettingsWindow : Window
         try
         {
             var status = await GetLocalIndexer().GetStatusAsync();
+            var previousAdminToken = LocalIndexerAdminTokenBox.Text;
+            var configuredUsePostgres = GetLocalIndexer().TryGetConfiguredUsePostgres();
+            if (configuredUsePostgres.HasValue && !_localIndexerCatalogUpdateInProgress)
+            {
+                SetLocalIndexerCatalogMode(configuredUsePostgres.Value);
+            }
             LocalIndexerEnabledBox.IsChecked = _config.LocalIndexer.Enabled;
-            LocalIndexerAdminTokenBox.Text = GetLocalIndexer().GetAdminTokenForSupport() ?? "";
+            var adminToken = GetLocalIndexer().GetAdminTokenForSupport() ?? "";
+            LocalIndexerAdminTokenBox.Text = adminToken;
+            if (status.Health.State == LocalIndexerHealthState.Healthy &&
+                (!_config.LocalIndexer.Enabled || !string.Equals(previousAdminToken, adminToken, StringComparison.Ordinal)))
+            {
+                // Completing first-run setup can create/rotate the loopback
+                // token while this dialog is open. Rebuild the main client now.
+                SetLocalIndexerEnabled(true);
+            }
             LocalIndexerStatusText.Text = status.Health.Message;
             var mode = OperatingSystem.IsLinux() ? "Linux user service" : "Windows service";
+            var catalogSize = status.IndexSizeBytes.HasValue
+                ? $" · catalog {FormatByteSize(status.IndexSizeBytes.Value)}"
+                : "";
             LocalIndexerDetailsText.Text = status.Version == null
                 ? mode
-                : $"Version {status.Version} · {mode} · {status.DocumentCount:n0} documents · crawler {status.CrawlerState}";
+                : $"Version {status.Version} · {mode} · {status.DocumentCount:n0} documents{catalogSize} · crawler {status.CrawlerState}";
             var roots = status.Roots.Count == 0
                 ? "Configured roots: none reported yet."
                 : "Configured roots: " + string.Join("; ", status.Roots.Select(root => $"{root.Name} ({root.State}, {root.DocumentCount:n0} documents)"));
@@ -796,7 +974,20 @@ public sealed partial class SettingsWindow : Window
         }
     }
 
-    private LocalIndexerManager GetLocalIndexer() => _localIndexer ??= new LocalIndexerManager();
+    private LocalIndexerManager GetLocalIndexer() => _localIndexer ??= new LocalIndexerManager(usePostgres: _config.LocalIndexer.UsePostgres);
+
+    private static string FormatByteSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return unit == 0 ? $"{bytes:n0} {units[unit]}" : $"{value:n1} {units[unit]}";
+    }
 
     private void ResetLocalIndexerManager()
     {

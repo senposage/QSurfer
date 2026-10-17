@@ -308,13 +308,26 @@
                                HorizontalOffset="-180"
                                IsLightDismissEnabled="True"
                                OverlayDismissEventPassThrough="True">
-                          <Border Classes="side-pane" Width="360" Padding="12">
-                            <StackPanel Spacing="9">
+                          <Border Classes="side-pane" Width="380" Padding="12">
+                            <StackPanel Spacing="10">
                               <TextBlock Text="QIndexer Boolean filters" Classes="panel-title" />
                               <TextBlock Text="Separate phrases with commas or new lines. Spaces inside a phrase are preserved. Qsirch still receives only the normal search box text." Classes="field-label" TextWrapping="Wrap" />
-                              <TextBox Watermark="Required: every phrase must match" Text="{Binding RequiredTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
-                              <TextBox Watermark="Any: at least one phrase must match" Text="{Binding AnyTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
-                              <TextBox Watermark="Exclude: omit matching phrases" Text="{Binding ExcludedTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                              <StackPanel Spacing="4">
+                                <TextBlock Text="Must include" Classes="field-label" FontWeight="SemiBold" />
+                                <TextBox Watermark="Every phrase must match" Text="{Binding RequiredTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                              </StackPanel>
+                              <StackPanel Spacing="4">
+                                <TextBlock Text="May include" Classes="field-label" FontWeight="SemiBold" />
+                                <TextBox Watermark="At least one phrase must match" Text="{Binding AnyTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                              </StackPanel>
+                              <StackPanel Spacing="4">
+                                <TextBlock Text="Exclude" Classes="field-label" FontWeight="SemiBold" />
+                                <TextBox Watermark="Omit matching phrases" Text="{Binding ExcludedTerms, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" MinHeight="38" TextWrapping="Wrap" />
+                              </StackPanel>
+                              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Margin="0,4,0,0">
+                                <Button Grid.Column="1" Content="Clear" Command="{Binding ClearBooleanFiltersCommand}" ToolTip.Tip="Remove all Boolean phrases and rerun this search" />
+                                <Button Grid.Column="2" Content="Apply" Classes="primary" Command="{Binding ApplyBooleanFiltersCommand}" ToolTip.Tip="Apply the Boolean phrases and rerun this search" />
+                              </Grid>
                             </StackPanel>
                           </Border>
                         </Popup>
@@ -549,7 +562,7 @@
                         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
                           <Button Content="&#x2197;" Classes="side-pane-action command-open" Command="{Binding OpenCommand}" ToolTip.Tip="Open selected item" />
                           <Button Content="&#x1F4C2;" Classes="side-pane-action command-show" Command="{Binding BrowseCommand}" ToolTip.Tip="Show selected item in File Explorer" />
-                          <Button Content="&#x1F5D3;" Classes="side-pane-action command-preview" Click="VersionHistory_Click" ToolTip.Tip="Version history" />
+                          <Button Content="&#x1F5D3;" Classes="side-pane-action command-preview" IsVisible="{Binding DataContext.CanOpenVersionHistory, RelativeSource={RelativeSource AncestorType=Window}}" Click="VersionHistory_Click" ToolTip.Tip="Version history" />
                         </StackPanel>
                       </Grid>
                     </Border>

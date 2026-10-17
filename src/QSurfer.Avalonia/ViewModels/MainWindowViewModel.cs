@@ -275,6 +275,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 IsNavigationVisible = value.IsBrowsing;
                 Status = value.Status;
             }
+            OnPropertyChanged(nameof(CanOpenVersionHistory));
         }
     }
 
@@ -295,6 +296,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             }
             OpenBrowserItemCommand.RaiseCanExecuteChanged();
             ToggleBrowserFavoriteCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(CanOpenVersionHistory));
             SetPreview(value is { } item ? CreateSearchResult(item) : null);
         }
     }
@@ -311,6 +313,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
             SetPreview(value?.Result);
             OpenFavoriteCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(CanOpenVersionHistory));
         }
     }
 
@@ -369,7 +372,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public bool IsRecycleBinView => IsNavigationVisible && IsRecycleBinPath(BrowserLocation);
     public bool IsLocalRecycleBinView => IsRecycleBinView && !IsNasBackedPath(BrowserLocation);
     public bool IsNasRecycleBinView => IsRecycleBinView && IsNasBackedPath(BrowserLocation);
-    public bool CanOpenVersionHistory => !IsNavigationVisible || IsNasBackedPath(BrowserLocation);
+    public bool CanOpenVersionHistory => IsNavigationVisible
+        ? IsNasBackedPath(BrowserLocation)
+        : SupportsVersionHistory(SelectedSearchTab?.SelectedResult ?? SelectedFavoriteNode?.Result);
     public bool IsHomeView => IsNavigationVisible && IsHomeLocation(BrowserLocation);
     public bool IsAddressNavigationPending
     {
@@ -2967,6 +2972,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         if (e.PropertyName == nameof(SearchTabViewModel.SelectedResult) && tab.SelectedResult is { } result)
         {
             SetPreview(result);
+        }
+        if (ReferenceEquals(tab, SelectedSearchTab) && e.PropertyName == nameof(SearchTabViewModel.SelectedResult))
+        {
+            OnPropertyChanged(nameof(CanOpenVersionHistory));
         }
         if (ReferenceEquals(tab, SelectedSearchTab) && e.PropertyName == nameof(SearchTabViewModel.SelectedScope))
         {

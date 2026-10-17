@@ -15,6 +15,7 @@ using Avalonia.VisualTree;
 using System.Globalization;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using QSurfer.Core.Models;
 using QSurfer.Core.Services;
 using QSurfer.Avalonia.Services;
@@ -55,6 +56,7 @@ public sealed partial class MainWindow : Window
     private bool _workspacePreviewVisible;
     private bool _workspaceLayoutInitialized;
     private bool _whatsNewQueued;
+    private bool _releaseCheckQueued;
     private double? _browserHorizontalOffset;
     private DataGrid? _browserResultsGrid;
     private ListBox? _browserResultsList;
@@ -121,6 +123,7 @@ public sealed partial class MainWindow : Window
             if (!_isDetachedWindow)
             {
                 _ = _viewModel.ReloadPinnedSearchesAsync();
+                QueueReleaseCheck();
             }
         };
         SizeChanged += (_, _) => ApplyResponsiveCommandLayout();
@@ -187,6 +190,57 @@ public sealed partial class MainWindow : Window
         // owner window behind a modal dialog or prevent the user moving QSurfer.
         dialog.Show(this);
         await Task.CompletedTask;
+    }
+
+    private void QueueReleaseCheck()
+    {
+        if (_releaseCheckQueued)
+        {
+            return;
+        }
+
+        _releaseCheckQueued = true;
+        Dispatcher.UIThread.Post(async () => await CheckForReleaseUpdateAsync(), DispatcherPriority.Background);
+    }
+
+    private async Task CheckForReleaseUpdateAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var currentVersion = typeof(MainWindow).Assembly.GetName().Version ?? new Version(1, 0);
+            var latestVersion = await ReleaseUpdateService.GetNewerReleaseVersionAsync(currentVersion, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(latestVersion) || !IsVisible)
+            {
+                return;
+            }
+
+            var dialog = new ConfirmationWindow(
+                "QSurfer update available",
+                $"QSurfer {latestVersion} is available. Open the release page in your browser?",
+                "Open releases",
+                "Later");
+            dialog.Confirmed += (_, _) => OpenReleasesPage();
+            dialog.Opened += (_, _) => Dispatcher.UIThread.Post(dialog.Activate, DispatcherPriority.Background);
+            dialog.Show(this);
+            AppLogger.Info("app", $"new QSurfer release available version={latestVersion}");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            AppLogger.Info("app", "release check unavailable");
+        }
+    }
+
+    private static void OpenReleasesPage()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(ReleaseUpdateService.ReleasesPageUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("app", ex, "could not open QSurfer release page");
+        }
     }
 
     internal void SetStatus(string message) => _viewModel.StatusMessage(message);
@@ -2896,6 +2950,11 @@ public sealed partial class MainWindow : Window
                 item.IsVisible = hasResult && !_contextResults[0].IsFolder;
                 continue;
             }
+            if (item.Tag as string == "versions")
+            {
+                item.IsVisible = hasResult && _contextResults.Count == 1 && _viewModel.SupportsVersionHistory(_contextResults[0]);
+                continue;
+            }
             if (item.Tag as string == "scope")
             {
                 item.IsVisible = hasResult && _contextResults.Count == 1 && _contextResults[0].IsFolder;
@@ -3035,7 +3094,8 @@ public sealed partial class MainWindow : Window
             {
                 "open" => isResult || isSavedSearch,
                 "show" => isResult && !node!.Result!.IsFolder,
-                "copy" or "versions" or "group" => isResult,
+                "versions" => isResult && _viewModel.SupportsVersionHistory(node!.Result),
+                "copy" or "group" => isResult,
                 "remove" => isResult || isSavedSearch,
                 "delete-group" => isGroup,
                 _ => true,

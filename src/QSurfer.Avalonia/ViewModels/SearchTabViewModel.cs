@@ -143,6 +143,8 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         StopCommand = new AsyncCommand(() => _stop(this), () => IsSearching);
         ClearCommand = new AsyncCommand(() => _clear(this), () => !IsSearching && (_allResults.Count > 0 || !string.IsNullOrWhiteSpace(Query)));
         ClearFiltersCommand = new AsyncCommand(ClearFiltersAsync);
+        ApplyBooleanFiltersCommand = new AsyncCommand(ApplyBooleanFiltersAsync, () => !string.IsNullOrWhiteSpace(Query));
+        ClearBooleanFiltersCommand = new AsyncCommand(ClearBooleanFiltersAsync);
         OpenCommand = new AsyncCommand(() => _open(this), () => SelectedResult != null);
         BrowseCommand = new AsyncCommand(() => _browse(this), () => SelectedResult != null);
         ToggleFavoriteCommand = new AsyncCommand(() => _toggleFavorite(this), () => SelectedResult != null);
@@ -165,6 +167,8 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
     public AsyncCommand StopCommand { get; }
     public AsyncCommand ClearCommand { get; }
     public AsyncCommand ClearFiltersCommand { get; }
+    public AsyncCommand ApplyBooleanFiltersCommand { get; }
+    public AsyncCommand ClearBooleanFiltersCommand { get; }
     public AsyncCommand OpenCommand { get; }
     public AsyncCommand BrowseCommand { get; }
     public AsyncCommand ToggleFavoriteCommand { get; }
@@ -578,6 +582,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
             }
             ApplyFilters();
             SearchCommand.RaiseCanExecuteChanged();
+            ApplyBooleanFiltersCommand.RaiseCanExecuteChanged();
             SaveSearchCommand.RaiseCanExecuteChanged();
             ClearCommand.RaiseCanExecuteChanged();
         }
@@ -670,6 +675,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(AnyTermList));
         OnPropertyChanged(nameof(ExcludedTermList));
         OnPropertyChanged(nameof(HasBooleanTerms));
+        ApplyBooleanFiltersCommand.RaiseCanExecuteChanged();
     }
 
     public bool IsPinned
@@ -993,6 +999,23 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         return Task.CompletedTask;
     }
 
+    private async Task ApplyBooleanFiltersAsync()
+    {
+        IsBooleanFilterOpen = false;
+        await SearchCommand.ExecuteAsync();
+    }
+
+    private async Task ClearBooleanFiltersAsync()
+    {
+        var hadTerms = HasBooleanTerms;
+        RestoreBooleanTerms([], [], []);
+        IsBooleanFilterOpen = false;
+        if (hadTerms && !string.IsNullOrWhiteSpace(Query))
+        {
+            await SearchCommand.ExecuteAsync();
+        }
+    }
+
     public bool SuppressFolderDates
     {
         get => _suppressFolderDates;
@@ -1016,6 +1039,7 @@ public sealed class SearchTabViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(AnyTermList));
         OnPropertyChanged(nameof(ExcludedTermList));
         OnPropertyChanged(nameof(HasBooleanTerms));
+        ApplyBooleanFiltersCommand.RaiseCanExecuteChanged();
     }
 
     private static IReadOnlyList<string> SplitBooleanTerms(string? value) => (value ?? "")

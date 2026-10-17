@@ -24,8 +24,8 @@ public sealed class AppConfig
     [JsonPropertyName("additional_search_providers")]
     public List<SearchProviderConnection> AdditionalSearchProviders { get; set; } = [];
 
-    // This is deliberately only an enable preference. Local QIndexer tokens
-    // stay in ACL-protected token files owned by LocalIndexerManager.
+    // Local QIndexer owns its service configuration and credentials. QSurfer
+    // stores only the user's provider preference and requested catalog mode.
     [JsonPropertyName("local_indexer")]
     public LocalIndexerSettings LocalIndexer { get; set; } = new();
 
@@ -380,7 +380,7 @@ public sealed class AppConfig
         Password = provider.Password,
         Token = provider.Token,
     };
-    private static LocalIndexerSettings CloneLocalIndexer(LocalIndexerSettings settings) => new() { Enabled = settings.Enabled };
+    private static LocalIndexerSettings CloneLocalIndexer(LocalIndexerSettings settings) => new() { Enabled = settings.Enabled, UsePostgres = settings.UsePostgres };
     private static void NormalizeSearchProviders(List<SearchProviderConnection> providers)
     {
         providers.RemoveAll(provider => provider == null);
@@ -544,6 +544,9 @@ public sealed class LocalIndexerSettings
 {
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; }
+
+    [JsonPropertyName("use_postgres")]
+    public bool UsePostgres { get; set; }
 }
 
 public sealed class SearchServiceConnection

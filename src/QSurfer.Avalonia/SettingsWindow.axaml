@@ -53,6 +53,7 @@
             <TextBlock Text="Local QIndexer" Classes="panel-title" />
             <TextBlock x:Name="LocalIndexerDescriptionText" Text="QSurfer installs an independent QIndexer service with loopback listeners. It keeps running when QSurfer is closed. Use advanced QIndexer administration to add network roots, change bindings, or enable any other QIndexer capability." Classes="field-label" TextWrapping="Wrap" />
             <CheckBox x:Name="LocalIndexerEnabledBox" Content="Index this computer" IsEnabled="False" />
+            <CheckBox x:Name="LocalIndexerUsePostgresBox" Content="Use PostgreSQL database (SQLite when off)" ToolTip.Tip="Enabled uses QIndexer's private PostgreSQL catalog. Disabled uses the portable SQLite catalog. Switching to PostgreSQL keeps the existing SQLite index in place but does not migrate it." />
             <Border Classes="settings-note">
               <StackPanel Spacing="5">
                 <TextBlock x:Name="LocalIndexerStatusText" Text="Checking local indexer state…" TextWrapping="Wrap" />

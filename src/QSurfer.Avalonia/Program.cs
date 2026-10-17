@@ -14,7 +14,9 @@ internal static class Program
     {
         if (LocalIndexerManager.IsSupported && args.Any(argument => string.Equals(argument, "--install-local-indexer-service", StringComparison.OrdinalIgnoreCase)))
         {
-            RunElevatedLocalIndexerInstall();
+            RunElevatedLocalIndexerInstall(
+                args.Any(argument => string.Equals(argument, "--local-indexer-sqlite", StringComparison.OrdinalIgnoreCase)),
+                GetOptionValue(args, "--local-indexer-progress"));
             return;
         }
 
@@ -38,7 +40,9 @@ internal static class Program
 
         if (LocalIndexerManager.IsSupported && args.Any(argument => string.Equals(argument, "--upgrade-local-indexer-service", StringComparison.OrdinalIgnoreCase)))
         {
-            RunElevatedLocalIndexerUpgrade();
+            RunElevatedLocalIndexerUpgrade(
+                args.Any(argument => string.Equals(argument, "--local-indexer-sqlite", StringComparison.OrdinalIgnoreCase)),
+                GetOptionValue(args, "--local-indexer-progress"));
             return;
         }
 
@@ -59,11 +63,11 @@ internal static class Program
         }
     }
 
-    private static void RunElevatedLocalIndexerInstall()
+    private static void RunElevatedLocalIndexerInstall(bool useSqlite, string? progressPath)
     {
         try
         {
-            using var manager = new LocalIndexerManager(stateDirectory: OperatingSystem.IsWindows() ? LocalIndexerManager.MachineStateRoot : null);
+            using var manager = new LocalIndexerManager(stateDirectory: OperatingSystem.IsWindows() ? LocalIndexerManager.MachineStateRoot : null, usePostgres: !useSqlite, progressPath: progressPath);
             if (OperatingSystem.IsLinux())
             {
                 manager.PrepareLinuxServiceAsync().GetAwaiter().GetResult();
@@ -72,7 +76,7 @@ internal static class Program
             {
                 manager.EnableAsync(forceWindowsService: true).GetAwaiter().GetResult();
             }
-            ShowInstallerResult("QSurfer local indexing service is installed, running, and healthy.", 0x40);
+            ShowInstallerResult("QSurfer local indexing service is installed and running. Complete first-run setup in QIndexer administration if prompted.", 0x40);
             Environment.ExitCode = 0;
         }
         catch (Exception exception)
@@ -131,11 +135,11 @@ internal static class Program
         }
     }
 
-    private static void RunElevatedLocalIndexerUpgrade()
+    private static void RunElevatedLocalIndexerUpgrade(bool useSqlite, string? progressPath)
     {
         try
         {
-            using var manager = new LocalIndexerManager(stateDirectory: OperatingSystem.IsWindows() ? LocalIndexerManager.MachineStateRoot : null);
+            using var manager = new LocalIndexerManager(stateDirectory: OperatingSystem.IsWindows() ? LocalIndexerManager.MachineStateRoot : null, usePostgres: !useSqlite, progressPath: progressPath);
             var result = manager.UpgradeAsync().GetAwaiter().GetResult();
             ShowInstallerResult($"QSurfer local QIndexer updated to {result.Version} and is healthy.", 0x40);
             Environment.ExitCode = 0;
@@ -153,6 +157,18 @@ internal static class Program
         {
             _ = MessageBoxW(IntPtr.Zero, message, "QSurfer local indexing", style);
         }
+    }
+
+    private static string? GetOptionValue(string[] args, string option)
+    {
+        for (var index = 0; index < args.Length - 1; index++)
+        {
+            if (string.Equals(args[index], option, StringComparison.OrdinalIgnoreCase))
+            {
+                return args[index + 1];
+            }
+        }
+        return null;
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
