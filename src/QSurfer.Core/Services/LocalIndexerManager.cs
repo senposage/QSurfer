@@ -1303,6 +1303,15 @@ public sealed class LocalIndexerManager : IDisposable
             throw new InvalidOperationException("The QIndexer package configuration has no roots section.");
         }
 
+        // The QIndexer installer deliberately emits a bare roots section for
+        // first run. Seed the signed-in Linux user's home only in that state;
+        // never replace roots managed later through QIndexer administration.
+        var existingRootSection = config[(roots.Index + roots.Length)..];
+        if (!string.IsNullOrWhiteSpace(existingRootSection))
+        {
+            return;
+        }
+
         // Roots are the final section of the shipped config. Preserve every
         // preceding QIndexer-owned setting, especially the provisioned DSN.
         var generated = config[..roots.Index] + "roots:" + Environment.NewLine + RenderRootEntries(DiscoverFixedVolumes());

@@ -20,7 +20,7 @@ Qsirch uses the NAS address, port, username, and password. QIndexer uses its own
 
 ### QIndexer (Windows)
 
-**Settings → QIndexer** can install a QSurfer-managed QIndexer for local search. Choose **Install / start Windows service**; Windows asks for elevation before anything is installed. The managed indexer is machine-wide and remains available when QSurfer is closed.
+**Settings → QIndexer** can install a QSurfer-managed QIndexer for local search. Choose **Install / start Windows service**; Windows asks for elevation before anything is installed. The managed indexer is machine-wide and remains available when QSurfer is closed. Choose SQLite for the lightweight default catalog or PostgreSQL for QIndexer's private local catalog; switching preserves the existing SQLite data.
 
 QSurfer downloads the official Windows package, verifies its published SHA-256 checksum, and keeps the index, configuration, and separate search/admin credentials in its private state directory. The initial configuration adds ready fixed drive-letter volumes and binds search and administration to `127.0.0.1`, so NAS and remote QIndexer connections remain independent provider rows. QIndexer remains a normal deployment: use its advanced administration UI to add mapped or UNC roots, adjust listeners, enable OCR/content/hashing, or otherwise configure it.
 
@@ -32,7 +32,7 @@ Disable stops the local indexer without deleting its data. Rebuild is explicit a
 
 On a systemd Linux distribution, **Settings -> QIndexer -> Install / start Linux service** downloads the latest [QIndexer GitHub release](https://github.com/senposage/qindexer/releases), verifies the published SHA-256 checksum, and asks Polkit for permission to register `qindexer.service`. The service starts at boot and runs as the signed-in QSurfer user, so it sees the same mounted shares and permissions as QSurfer.
 
-The managed binary, configuration, index, and loopback tokens remain under `~/.qsurfer/QIndexer`; a QSurfer update does not overwrite them. **Check for update** follows the same verified GitHub-release path, stops the service, starts the new binary, and rolls back if it does not become healthy. The initial root is the user's home folder. Add persistent NAS mount roots through QIndexer's advanced administration after the operating system has mounted them. QIndexer is never included inside the QSurfer Linux package.
+The managed binary, configuration, index, and loopback tokens remain under `~/.qsurfer/QIndexer`; a QSurfer update does not overwrite them. Choose SQLite for the lightweight default catalog or PostgreSQL for QIndexer's private local catalog; switching preserves the existing SQLite data. **Check for update** follows the same verified GitHub-release path, stops the service, starts the new binary, and rolls back if it does not become healthy. The initial root is the signed-in user's home folder, and later service changes never replace roots added through QIndexer administration. Add persistent NAS mount roots through QIndexer's advanced administration after the operating system has mounted them. QIndexer is never included inside the QSurfer Linux package.
 
 ## Search
 

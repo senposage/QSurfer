@@ -46,9 +46,9 @@
       </StackPanel>
       <StackPanel x:Name="UpdatePage" IsVisible="False" Spacing="14">
         <TextBlock Text="Local QIndexer is ready from Settings" Classes="help-topic-title" />
-        <TextBlock Text="QSurfer can now download, install, start, update, and check a local QIndexer service from Settings. It configures a private loopback connection automatically, while your Qsirch connections remain separate and can still be used alongside it." TextWrapping="Wrap" Classes="help-copy" />
-        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Choose your local catalog" FontWeight="SemiBold" /><TextBlock Text="Local QIndexer can use SQLite by default or PostgreSQL when enabled. Existing SQLite data stays in place when you switch, and QIndexer handles its own protected configuration and credentials." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
-        <TextBlock Text="Boolean search filters now have a clearer Apply and Clear workflow. QSurfer also checks GitHub for a newer QSurfer release after startup; it only offers to open the release page and never downloads or installs an update on its own." TextWrapping="Wrap" Classes="help-copy" />
+        <TextBlock Text="QSurfer can download, install, start, stop, update, and remove a local QIndexer service from Settings. It configures a private loopback connection automatically, while Qsirch remains separate and can still run alongside it." TextWrapping="Wrap" Classes="help-copy" />
+        <Border Classes="settings-note"><StackPanel Spacing="5"><TextBlock Text="Choose your local catalog" FontWeight="SemiBold" /><TextBlock Text="Local QIndexer can use SQLite or PostgreSQL. Switching to PostgreSQL preserves the SQLite catalog, while QIndexer manages its own protected configuration and credentials. A new Linux installation starts with your home folder ready to index and never replaces roots you add later." TextWrapping="Wrap" Classes="help-copy" /></StackPanel></Border>
+        <TextBlock Text="Service setup and recovery are safer when a first-time setup is incomplete. Boolean filters have a clearer Apply and Clear workflow. QSurfer also checks GitHub for newer releases after startup; it only offers to open the release page and never downloads or installs an update on its own." TextWrapping="Wrap" Classes="help-copy" />
         <TextBlock Text="Open Help anytime for the full reference." TextWrapping="Wrap" Classes="help-copy" />
       </StackPanel>
     </Grid>
