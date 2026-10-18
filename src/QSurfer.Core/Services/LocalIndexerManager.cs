@@ -390,10 +390,17 @@ public sealed class LocalIndexerManager : IDisposable
         }
 
         // The authenticated endpoint asks QIndexer to flush/checkpoint before
-        // it exits. It is intentionally best effort when the process is dead.
+        // it exits. It is intentionally best effort when the process is dead
+        // or still in first-run setup without a management token.
         try
         {
             await SendAdminAsync(HttpMethod.Post, "/admin/v1/service/stop", null, cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // The generated config may not contain a management token yet.
+            // Fall through to the owning service manager so uninstall and
+            // catalog-mode changes remain recoverable from first-run setup.
         }
         catch (HttpRequestException)
         {
