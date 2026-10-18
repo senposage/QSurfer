@@ -1,5 +1,6 @@
 using Avalonia;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using QSurfer.Avalonia.Services;
 using QSurfer.Core.Services;
 
@@ -81,6 +82,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            WriteLocalIndexerFailureProgress(progressPath, exception);
             // Never include configuration paths or secrets in this one-shot helper.
             ShowInstallerResult($"QSurfer could not install the local indexing service. {exception.Message}", 0x10);
             Environment.ExitCode = 1;
@@ -169,6 +171,32 @@ internal static class Program
             }
         }
         return null;
+    }
+
+    private static void WriteLocalIndexerFailureProgress(string? progressPath, Exception exception)
+    {
+        if (string.IsNullOrWhiteSpace(progressPath)) return;
+        try
+        {
+            var message = exception.GetBaseException().Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (message.Length > 360) message = message[..360] + "...";
+            var payload = JsonSerializer.Serialize(new
+            {
+                schema_version = 1,
+                status = "failed",
+                stage = "qsurfer_helper",
+                percent = 100,
+                message = string.IsNullOrWhiteSpace(message) ? "The privileged QIndexer helper did not finish." : message,
+                updated_at = DateTimeOffset.UtcNow,
+            });
+            var temporaryPath = progressPath + ".tmp";
+            File.WriteAllText(temporaryPath, payload);
+            File.Move(temporaryPath, progressPath, overwrite: true);
+        }
+        catch
+        {
+            // The caller still receives the helper exit code when a progress file cannot be written.
+        }
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]

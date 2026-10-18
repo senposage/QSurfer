@@ -772,7 +772,7 @@ public sealed partial class SettingsWindow : Window
         return Path.Combine(directory, $"qindexer-setup-{Guid.NewGuid():N}.json");
     }
 
-    private async Task<int> WaitForLocalIndexerHelperAsync(Process process, string progressPath)
+    private async Task<int> WaitForLocalIndexerHelperAsync(Process process, string progressPath, bool deleteProgressOnCompletion = true)
     {
         try
         {
@@ -786,7 +786,7 @@ public sealed partial class SettingsWindow : Window
         }
         finally
         {
-            TryDeleteProgressFile(progressPath);
+            if (deleteProgressOnCompletion) TryDeleteProgressFile(progressPath);
         }
     }
 
@@ -828,12 +828,37 @@ public sealed partial class SettingsWindow : Window
         }
     }
 
-    private async Task RunLinuxIndexerCommandAsync(string command, string failureMessage, bool useSqlite = false)
+    private static string? ReadLocalIndexerSetupFailure(string progressPath)
     {
         try
         {
+            using var document = JsonDocument.Parse(File.ReadAllText(progressPath));
+            var root = document.RootElement;
+            var status = root.TryGetProperty("status", out var statusValue) ? statusValue.GetString() : null;
+            if (!string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)) return null;
+
+            var stage = root.TryGetProperty("stage", out var stageValue) ? stageValue.GetString() : null;
+            var message = root.TryGetProperty("message", out var messageValue) ? messageValue.GetString() : null;
+            var detail = string.Join(": ", new[] { stage, message }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            return string.IsNullOrWhiteSpace(detail) ? null : detail;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private async Task RunLinuxIndexerCommandAsync(string command, string failureMessage, bool useSqlite = false)
+    {
+        string? progressPath = null;
+        try
+        {
             var executable = Environment.ProcessPath ?? throw new InvalidOperationException("QSurfer could not locate its executable for Linux service setup.");
-            var progressPath = CreateLocalIndexerProgressPath();
+            progressPath = CreateLocalIndexerProgressPath();
             var startInfo = new ProcessStartInfo("pkexec")
             {
                 UseShellExecute = false,
@@ -848,9 +873,19 @@ public sealed partial class SettingsWindow : Window
                 startInfo.ArgumentList.Add("--local-indexer-sqlite");
             }
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Linux did not start the privileged service helper.");
-            if (await WaitForLocalIndexerHelperAsync(process, progressPath) != 0)
+            if (await WaitForLocalIndexerHelperAsync(process, progressPath, deleteProgressOnCompletion: false) != 0)
             {
-                LocalIndexerStatusText.Text = failureMessage;
+                var detail = ReadLocalIndexerSetupFailure(progressPath);
+                if (!string.IsNullOrWhiteSpace(detail))
+                {
+                    AppLogger.Warn("qindexer", $"Linux QIndexer setup failed detail=\"{detail}\"");
+                    LocalIndexerStatusText.Text = $"{failureMessage} ({detail})";
+                }
+                else
+                {
+                    AppLogger.Warn("qindexer", "Linux QIndexer setup helper exited without a failure detail.");
+                    LocalIndexerStatusText.Text = failureMessage;
+                }
                 return;
             }
 
@@ -868,9 +903,14 @@ public sealed partial class SettingsWindow : Window
                 : "Local QIndexer service is installed and healthy.";
             await RefreshLocalIndexerStatusAsync();
         }
-        catch
+        catch (Exception exception)
         {
+            AppLogger.Error("qindexer", exception, "Linux QIndexer setup failed before completion");
             LocalIndexerStatusText.Text = failureMessage;
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(progressPath)) TryDeleteProgressFile(progressPath);
         }
     }
 
