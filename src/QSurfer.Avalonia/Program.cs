@@ -29,7 +29,7 @@ internal static class Program
 
         if (LocalIndexerManager.IsSupported && args.Any(argument => string.Equals(argument, "--start-local-indexer-service", StringComparison.OrdinalIgnoreCase)))
         {
-            RunElevatedLocalIndexerStart();
+            RunElevatedLocalIndexerStart(GetOptionValue(args, "--local-indexer-progress"));
             return;
         }
 
@@ -105,7 +105,7 @@ internal static class Program
         }
     }
 
-    private static void RunElevatedLocalIndexerStart()
+    private static void RunElevatedLocalIndexerStart(string? progressPath)
     {
         try
         {
@@ -116,6 +116,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            WriteLocalIndexerFailureProgress(progressPath, exception);
             ShowInstallerResult($"QSurfer could not start the local indexing service. {exception.Message}", 0x10);
             Environment.ExitCode = 1;
         }
@@ -148,6 +149,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            WriteLocalIndexerFailureProgress(progressPath, exception);
             ShowInstallerResult($"QSurfer could not update the local QIndexer. {exception.Message}", 0x10);
             Environment.ExitCode = 1;
         }

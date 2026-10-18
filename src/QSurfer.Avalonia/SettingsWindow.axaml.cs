@@ -435,7 +435,12 @@ public sealed partial class SettingsWindow : Window
         {
             if (OperatingSystem.IsLinux())
             {
-                await StartLocalIndexerAsync(GetLocalIndexer());
+                var linuxConfirmation = new ConfirmationWindow(
+                    "Start local indexing service",
+                    "QSurfer will ask the system for permission to start the local QIndexer service.",
+                    "Start service");
+                if (await linuxConfirmation.ShowDialog<bool?>(this) != true) return;
+                await RunLinuxIndexerCommandAsync("--start-local-indexer-service", "Linux could not start the local QIndexer service.");
                 return;
             }
 
@@ -607,12 +612,10 @@ public sealed partial class SettingsWindow : Window
                 if (await confirmation.ShowDialog<bool?>(this) != true) return false;
                 _config.LocalIndexer.UsePostgres = usePostgres;
                 ConfigStore.Save(_config);
-                ResetLocalIndexerManager();
-                await GetLocalIndexer().UpgradeAsync();
-                SetLocalIndexerEnabled(true);
-                LocalIndexerStatusText.Text = "Local QIndexer update completed.";
-                await RefreshLocalIndexerStatusAsync();
-                return true;
+                return await RunLinuxIndexerCommandAsync(
+                    "--upgrade-local-indexer-service",
+                    "Linux could not update the local QIndexer service. The previous executable and index were retained.",
+                    !usePostgres);
             }
 
             if (!LocalIndexerManager.IsElevated())
@@ -852,7 +855,7 @@ public sealed partial class SettingsWindow : Window
         }
     }
 
-    private async Task RunLinuxIndexerCommandAsync(string command, string failureMessage, bool useSqlite = false)
+    private async Task<bool> RunLinuxIndexerCommandAsync(string command, string failureMessage, bool useSqlite = false)
     {
         string? progressPath = null;
         try
@@ -886,7 +889,7 @@ public sealed partial class SettingsWindow : Window
                     AppLogger.Warn("qindexer", "Linux QIndexer setup helper exited without a failure detail.");
                     LocalIndexerStatusText.Text = failureMessage;
                 }
-                return;
+                return false;
             }
 
             ResetLocalIndexerManager();
@@ -900,13 +903,17 @@ public sealed partial class SettingsWindow : Window
             SetLocalIndexerEnabled(true);
             LocalIndexerStatusText.Text = health.State == LocalIndexerHealthState.SetupRequired
                 ? "Local QIndexer service is running. Set its first token in advanced administration."
-                : "Local QIndexer service is installed and healthy.";
+                : command.Equals("--upgrade-local-indexer-service", StringComparison.OrdinalIgnoreCase)
+                    ? "Local QIndexer update completed."
+                    : "Local QIndexer service is installed and healthy.";
             await RefreshLocalIndexerStatusAsync();
+            return true;
         }
         catch (Exception exception)
         {
             AppLogger.Error("qindexer", exception, "Linux QIndexer setup failed before completion");
             LocalIndexerStatusText.Text = failureMessage;
+            return false;
         }
         finally
         {

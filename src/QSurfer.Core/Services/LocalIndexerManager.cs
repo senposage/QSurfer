@@ -104,9 +104,8 @@ public sealed class LocalIndexerManager : IDisposable
     public static string MachineStateRoot => MachineStateDirectory();
 
     /// <summary>
-    /// Performs the privileged, one-time Linux registration work. The caller's
-    /// user session starts the service afterwards so Polkit never has to bridge
-    /// into the graphical user's D-Bus session.
+    /// Performs the privileged Linux registration and starts the service for
+    /// the original desktop user through that user's systemd session.
     /// </summary>
     public async Task<string> PrepareLinuxServiceAsync(CancellationToken cancellationToken = default)
     {
@@ -132,6 +131,7 @@ public sealed class LocalIndexerManager : IDisposable
         }
 
         await EnsureLinuxServiceAsync(cancellationToken);
+        await StartAsync(cancellationToken);
         return version;
     }
 
@@ -343,10 +343,6 @@ public sealed class LocalIndexerManager : IDisposable
 
         if (OperatingSystem.IsLinux())
         {
-            if (IsElevated())
-            {
-                throw new InvalidOperationException("Start the Linux QIndexer service from the signed-in QSurfer session.");
-            }
             if (!File.Exists(LinuxUserServiceUnitPath()))
             {
                 throw new InvalidOperationException("The Linux QIndexer service has not been registered yet.");
